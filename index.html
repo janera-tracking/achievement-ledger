@@ -65,6 +65,8 @@
             });
         };
 
+        const getActiveUid = () => overrideUid || auth.currentUser?.uid;
+
         const updateUI = () => {
             const data = dailyDb[currentDate] || { dailyNotes: "", target: 22, filters: [false, false, false, false], tasks: { fuel: [], engine: [], legacy: [] } };
             document.getElementById('northStar').value = globalData.northStar || "";
@@ -122,8 +124,6 @@
             renderTrend();
         };
 
-        const getActiveUid = () => overrideUid || auth.currentUser?.uid;
-
         const syncToCloud = async () => {
             const uid = getActiveUid();
             if (!uid) return;
@@ -153,6 +153,7 @@
             if (task) { task.text = text; syncToCloud(); }
         };
 
+        // EXPORT TO WINDOW (Fixes button clicks)
         window.addTask = (cat) => {
             const input = document.getElementById(cat + 'Input');
             const val = input.value.trim();
@@ -210,13 +211,11 @@
         };
 
         const init = async () => {
-            // Priority 1: Show ID from localStorage immediately if it exists
             if (overrideUid) {
                 document.getElementById('myIdDisplay').innerText = overrideUid;
                 document.getElementById('syncBtn').innerText = "Unlink Sync";
             }
 
-            // Priority 2: Authenticate
             try {
                 if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
                     await signInWithCustomToken(auth, __initial_auth_token);
@@ -225,19 +224,16 @@
                 }
             } catch (e) {
                 console.error("Auth error:", e);
+                document.getElementById('myIdDisplay').innerText = "Auth Connection Error";
             }
 
             onAuthStateChanged(auth, async (u) => {
                 user = u;
-                if (user || overrideUid) {
-                    const uid = getActiveUid();
-                    document.getElementById('myIdDisplay').innerText = uid || "Auth Failed";
-                    
+                const uid = getActiveUid();
+                if (uid) {
+                    document.getElementById('myIdDisplay').innerText = uid;
                     const globalSnap = await getDoc(doc(db, 'artifacts', appId, 'users', uid, 'settings', 'global'));
-                    if (globalSnap.exists()) {
-                        globalData = globalSnap.data();
-                    }
-                    
+                    if (globalSnap.exists()) globalData = globalSnap.data();
                     document.getElementById('datePicker').value = currentDate;
                     setupRealtimeListener();
                 }
@@ -269,7 +265,6 @@
         .nav-btn { padding: 0.5rem 0.8rem; border-radius: 0.75rem; font-weight: 600; }
         .priority-task { border-left: 4px solid #f59e0b !important; background-color: #fffbeb !important; }
         .progress-ring__circle { transition: stroke-dashoffset 0.35s; transform: rotate(-90deg); transform-origin: 50% 50%; }
-        /* Custom scrollbar for notes */
         textarea::-webkit-scrollbar { width: 6px; }
         textarea::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 10px; }
     </style>
@@ -313,15 +308,6 @@
                     <div class="flex justify-between items-center mb-4 text-xs font-bold"><span id="logDateLabel">Log</span><span class="text-slate-500 font-mono text-[10px]" id="timestampDisplay">Waiting...</span></div>
                     <textarea id="dailyNotes" class="w-full h-72 bg-slate-800/50 border border-slate-700 rounded-xl p-5 text-sm text-slate-200 outline-none focus:ring-2 focus:ring-indigo-500/20" placeholder="Insights..."></textarea>
                 </div>
-                <div class="card p-6">
-                    <h2 class="font-black text-slate-800 uppercase text-xs tracking-wider mb-6">Strategic Filter Audit</h2>
-                    <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
-                        <label class="flex items-center gap-3 p-3 bg-slate-50 rounded-xl cursor-pointer hover:bg-slate-100 transition-colors"><input type="checkbox" id="filter1" class="w-5 h-5 accent-indigo-600"><span class="text-[11px] font-bold text-slate-600">Fuels Home Impact</span></label>
-                        <label class="flex items-center gap-3 p-3 bg-slate-50 rounded-xl cursor-pointer hover:bg-slate-100 transition-colors"><input type="checkbox" id="filter2" class="w-5 h-5 accent-indigo-600"><span class="text-[11px] font-bold text-slate-600">Builds Developer Brand</span></label>
-                        <label class="flex items-center gap-3 p-3 bg-slate-50 rounded-xl cursor-pointer hover:bg-slate-100 transition-colors"><input type="checkbox" id="filter3" class="w-5 h-5 accent-indigo-600"><span class="text-[11px] font-bold text-slate-600">Technical Outsourced</span></label>
-                        <label class="flex items-center gap-3 p-3 bg-slate-50 rounded-xl cursor-pointer hover:bg-slate-100 transition-colors"><input type="checkbox" id="filter4" class="w-5 h-5 accent-indigo-600"><span class="text-[11px] font-bold text-slate-600">Investor Networking</span></label>
-                    </div>
-                </div>
             </div>
 
             <div class="lg:col-span-5 space-y-6">
@@ -344,15 +330,15 @@
             </div>
         </div>
 
-        <!-- Sync Footer -->
         <footer class="fixed bottom-0 left-0 w-full bg-white/80 backdrop-blur-md border-t p-4 z-50">
             <div class="max-w-6xl mx-auto flex flex-col md:flex-row justify-between items-center gap-4">
                 <div class="text-[10px] text-slate-400 font-mono flex items-center gap-2">
                     <div class="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></div>
-                    MY DEVICE ID: <span id="myIdDisplay" class="text-indigo-600 font-bold select-all tracking-wider">LOADING...</span>
+                    MY DEVICE ID: <span id="myIdDisplay" class="text-indigo-600 font-bold select-all tracking-wider">WAITING FOR CONNECTION...</span>
+                    <button onclick="location.reload()" class="ml-2 text-indigo-400 hover:text-indigo-600 underline">Force Refresh</button>
                 </div>
                 <div class="flex gap-3">
-                    <button id="syncBtn" onclick="localStorage.getItem('sync_uid') ? clearSyncId() : setSyncId()" class="text-xs font-black uppercase tracking-widest px-6 py-2 bg-slate-900 text-white rounded-xl hover:bg-indigo-600 transition-all shadow-lg shadow-indigo-200">Sync Device</button>
+                    <button id="syncBtn" onclick="localStorage.getItem('sync_uid') ? window.clearSyncId() : window.setSyncId()" class="text-xs font-black uppercase tracking-widest px-6 py-2 bg-slate-900 text-white rounded-xl hover:bg-indigo-600 transition-all shadow-lg shadow-indigo-200">Sync Device</button>
                 </div>
             </div>
         </footer>
