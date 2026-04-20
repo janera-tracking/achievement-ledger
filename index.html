@@ -21,14 +21,14 @@
 
         // Global State
         let user = null;
-        let globalData = { northStar: "Mastering the partnership with Vin and building impactful homes." };
+        let globalData = { northStar: "Become a residential real estate developer and build projects that promote impact and wellbeing to the residents." };
         let dailyDb = {}; 
         let currentDate = new Date().toISOString().split('T')[0];
         let unsubscribeDoc = null;
+        let overrideUid = localStorage.getItem('sync_uid');
 
-        // UI Helpers
         const updateScoreUI = (score, target) => {
-            const percent = Math.min(Math.round((score / target) * 100), 100);
+            const percent = Math.min(Math.round((score / (target || 22)) * 100), 100);
             document.getElementById('dailyScoreDisplay').innerText = score;
             document.getElementById('percentDisplay').innerText = `${percent}%`;
             const circle = document.getElementById('progressCircle');
@@ -47,31 +47,25 @@
             }
             days.forEach(dayKey => {
                 let dayScore = 0;
-                let dayTarget = dailyDb[dayKey]?.target || 22;
-                if (dailyDb[dayKey]) {
+                let data = dailyDb[dayKey];
+                let dayTarget = data?.target || 22;
+                if (data) {
                     const pts = { fuel: 1, engine: 3, legacy: 5 };
-                    Object.keys(dailyDb[dayKey].tasks || {}).forEach(cat => {
-                        dailyDb[dayKey].tasks[cat].forEach(t => { if(t.completed) dayScore += pts[cat]; });
+                    Object.keys(data.tasks || {}).forEach(cat => {
+                        (data.tasks[cat] || []).forEach(t => { if(t.completed) dayScore += pts[cat]; });
                     });
-                    dayScore += ((dailyDb[dayKey].filters || []).filter(f => f).length * 2);
+                    dayScore += ((data.filters || []).filter(f => f).length * 2);
                 }
                 const percent = Math.min((dayScore / dayTarget) * 100, 100);
                 const bar = document.createElement('div');
                 bar.className = `w-3 rounded-t-sm transition-all ${dayKey === currentDate ? 'bg-indigo-500' : 'bg-slate-300'}`;
-                bar.style.height = `${Math.max(percent / 2, 2)}px`; 
-                bar.title = `${dayKey}: ${percent}%`;
+                bar.style.height = `${Math.max(percent / 2, 4)}px`; 
                 chart.appendChild(bar);
             });
         };
 
         const updateUI = () => {
-            const data = dailyDb[currentDate] || {
-                dailyNotes: "",
-                target: 22,
-                filters: [false, false, false, false],
-                tasks: { fuel: [], engine: [], legacy: [] }
-            };
-            
+            const data = dailyDb[currentDate] || { dailyNotes: "", target: 22, filters: [false, false, false, false], tasks: { fuel: [], engine: [], legacy: [] } };
             document.getElementById('northStar').value = globalData.northStar || "";
             document.getElementById('dailyNotes').value = data.dailyNotes || "";
             document.getElementById('targetDisplay').innerText = data.target || 22;
@@ -99,79 +93,70 @@
                             <button class="delete-btn text-slate-300 hover:text-red-500 p-1"><i class="fa-solid fa-xmark text-[10px]"></i></button>
                         </div>
                     `;
-                    
-                    // Events
                     div.querySelector(`#check-${cat}-${task.id}`).onclick = () => toggleTask(cat, task.id);
                     div.querySelector('.priority-btn').onclick = () => togglePriority(cat, task.id);
                     div.querySelector('.delete-btn').onclick = () => deleteTask(cat, task.id);
                     const span = div.querySelector('span');
                     span.onblur = () => editTaskText(cat, task.id, span.innerText);
-                    span.onkeydown = (e) => { if(e.key==='Enter'){ e.preventDefault(); span.blur(); } };
-
                     container.appendChild(div);
                 });
             });
 
-            // Calculate Score
             let score = 0;
             const ptsMapping = { fuel: 1, engine: 3, legacy: 5 };
-            Object.keys(data.tasks || {}).forEach(cat => {
-                data.tasks[cat].forEach(t => { if(t.completed) score += ptsMapping[cat]; });
-            });
+            Object.keys(data.tasks || {}).forEach(cat => { (data.tasks[cat] || []).forEach(t => { if(t.completed) score += ptsMapping[cat]; }); });
             const filterBonus = (data.filters || []).filter(f => f).length * 2;
             score += filterBonus;
-            
             const badge = document.getElementById('bonusBadge');
-            if (filterBonus > 0) { badge.classList.remove('hidden'); badge.innerText = `+${filterBonus} STRATEGY`; }
-            else { badge.classList.add('hidden'); }
-            
+            if (filterBonus > 0) { badge.classList.remove('hidden'); badge.innerText = `+${filterBonus} STRATEGY`; } else { badge.classList.add('hidden'); }
             updateScoreUI(score, data.target || 22);
             renderTrend();
         };
 
-        // Data Persistence
+        const getActiveUid = () => overrideUid || user?.uid;
+
         const syncToCloud = async () => {
-            if (!user) return;
+            const uid = getActiveUid();
+            if (!uid) return;
             try {
-                await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'global'), globalData);
-                await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'days', currentDate), dailyDb[currentDate]);
-                document.getElementById('timestampDisplay').innerText = `Saved to cloud: ${new Date().toLocaleTimeString()}`;
-            } catch (e) { console.error("Sync error", e); }
+                await setDoc(doc(db, 'artifacts', appId, 'users', uid, 'settings', 'global'), globalData);
+                if (dailyDb[currentDate]) {
+                    await setDoc(doc(db, 'artifacts', appId, 'users', uid, 'days', currentDate), dailyDb[currentDate]);
+                }
+                document.getElementById('timestampDisplay').innerText = `Saved: ${new Date().toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})}`;
+            } catch (e) { console.error(e); }
         };
 
         const toggleTask = (cat, id) => {
             const task = dailyDb[currentDate].tasks[cat].find(t => t.id === id);
-            task.completed = !task.completed;
-            syncToCloud();
+            if (task) { task.completed = !task.completed; updateUI(); syncToCloud(); }
         };
-
         const togglePriority = (cat, id) => {
             const task = dailyDb[currentDate].tasks[cat].find(t => t.id === id);
-            task.priority = !task.priority;
-            syncToCloud();
+            if (task) { task.priority = !task.priority; updateUI(); syncToCloud(); }
         };
-
         const deleteTask = (cat, id) => {
             dailyDb[currentDate].tasks[cat] = dailyDb[currentDate].tasks[cat].filter(t => t.id !== id);
-            syncToCloud();
+            updateUI(); syncToCloud();
         };
-
         const editTaskText = (cat, id, text) => {
             const task = dailyDb[currentDate].tasks[cat].find(t => t.id === id);
-            task.text = text;
-            syncToCloud();
+            if (task) { task.text = text; syncToCloud(); }
         };
 
         window.addTask = (cat) => {
             const input = document.getElementById(cat + 'Input');
-            if (!input.value.trim()) return;
+            const val = input.value.trim();
+            if (!val) return;
+            if (!dailyDb[currentDate]) dailyDb[currentDate] = { dailyNotes: "", target: 22, filters: [false, false, false, false], tasks: { fuel: [], engine: [], legacy: [] } };
             if (!dailyDb[currentDate].tasks) dailyDb[currentDate].tasks = { fuel: [], engine: [], legacy: [] };
-            dailyDb[currentDate].tasks[cat].push({ id: Date.now(), text: input.value, completed: false, priority: false });
-            input.value = '';
-            syncToCloud();
+            if (!dailyDb[currentDate].tasks[cat]) dailyDb[currentDate].tasks[cat] = [];
+            dailyDb[currentDate].tasks[cat].push({ id: Date.now(), text: val, completed: false, priority: false });
+            input.value = ''; updateUI(); syncToCloud();
         };
 
         window.updateTarget = (el) => {
+            if (!dailyDb[currentDate]) return;
             dailyDb[currentDate].target = parseInt(el.innerText) || 22;
             syncToCloud();
         };
@@ -189,22 +174,30 @@
             setupRealtimeListener();
         };
 
-        // Real-time listener for current date
+        window.setSyncId = () => {
+            const id = prompt("Enter Sync ID from your other device:");
+            if (id && id.length > 5) {
+                localStorage.setItem('sync_uid', id);
+                location.reload();
+            }
+        };
+
+        window.clearSyncId = () => {
+            localStorage.removeItem('sync_uid');
+            location.reload();
+        };
+
         const setupRealtimeListener = () => {
-            if (!user) return;
+            const uid = getActiveUid();
+            if (!uid) return;
             if (unsubscribeDoc) unsubscribeDoc();
-            
-            unsubscribeDoc = onSnapshot(doc(db, 'artifacts', appId, 'users', user.uid, 'days', currentDate), (docSnap) => {
-                if (docSnap.exists()) {
-                    dailyDb[currentDate] = docSnap.data();
-                } else {
-                    dailyDb[currentDate] = { dailyNotes: "", target: 22, filters: [false, false, false, false], tasks: { fuel: [], engine: [], legacy: [] } };
-                }
+            unsubscribeDoc = onSnapshot(doc(db, 'artifacts', appId, 'users', uid, 'days', currentDate), (docSnap) => {
+                if (docSnap.exists()) { dailyDb[currentDate] = docSnap.data(); } 
+                else if (!dailyDb[currentDate]) { dailyDb[currentDate] = { dailyNotes: "", target: 22, filters: [false, false, false, false], tasks: { fuel: [], engine: [], legacy: [] } }; }
                 updateUI();
             }, (err) => console.error(err));
         };
 
-        // Init Auth & Listeners
         const init = async () => {
             if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
                 await signInWithCustomToken(auth, __initial_auth_token);
@@ -215,48 +208,41 @@
             onAuthStateChanged(auth, async (u) => {
                 user = u;
                 if (user) {
-                    // Load Global Settings
-                    const globalSnap = await getDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'global'));
+                    const uid = getActiveUid();
+                    const globalSnap = await getDoc(doc(db, 'artifacts', appId, 'users', uid, 'settings', 'global'));
                     if (globalSnap.exists()) globalData = globalSnap.data();
-                    
                     document.getElementById('datePicker').value = currentDate;
+                    document.getElementById('myIdDisplay').innerText = uid;
+                    if (overrideUid) document.getElementById('syncBtn').innerText = "Unlink Sync";
                     setupRealtimeListener();
                 }
             });
         };
 
-        // Attach global events
-        document.getElementById('northStar').oninput = () => {
-            globalData.northStar = document.getElementById('northStar').value;
-            syncToCloud();
-        };
-        document.getElementById('dailyNotes').oninput = () => {
-            dailyDb[currentDate].dailyNotes = document.getElementById('dailyNotes').value;
-            syncToCloud();
-        };
+        document.getElementById('northStar').oninput = () => { globalData.northStar = document.getElementById('northStar').value; syncToCloud(); };
+        document.getElementById('dailyNotes').oninput = () => { if (!dailyDb[currentDate]) return; dailyDb[currentDate].dailyNotes = document.getElementById('dailyNotes').value; syncToCloud(); };
         for(let i=1; i<=4; i++) {
             document.getElementById('filter'+i).onchange = () => {
+                if(!dailyDb[currentDate]) return;
                 if(!dailyDb[currentDate].filters) dailyDb[currentDate].filters = [false, false, false, false];
                 dailyDb[currentDate].filters[i-1] = document.getElementById('filter'+i).checked;
-                syncToCloud();
+                updateUI(); syncToCloud();
             };
         }
-
         window.onload = init;
     </script>
 
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700;900&display=swap');
-        body { font-family: 'Inter', sans-serif; background-color: #f1f5f9; color: #1e293b; -webkit-tap-highlight-color: transparent; }
-        .card { background: white; border-radius: 1.25rem; border: 1px solid #e2e8f0; box-shadow: 0 1px 3px rgba(0,0,0,0.05); transition: all 0.2s ease; }
+        body { font-family: 'Inter', sans-serif; background-color: #f8fafc; color: #1e293b; }
+        .card { background: white; border-radius: 1.25rem; border: 1px solid #e2e8f0; box-shadow: 0 1px 2px rgba(0,0,0,0.03); }
         .strikethrough { text-decoration: line-through; opacity: 0.4; }
-        .nav-btn { padding: 0.5rem 1rem; border-radius: 0.75rem; font-weight: 600; font-size: 0.875rem; transition: all 0.2s; }
+        .nav-btn { padding: 0.5rem 0.8rem; border-radius: 0.75rem; font-weight: 600; }
         .priority-task { border-left: 4px solid #f59e0b !important; background-color: #fffbeb !important; }
         .progress-ring__circle { transition: stroke-dashoffset 0.35s; transform: rotate(-90deg); transform-origin: 50% 50%; }
-        .editable-text:focus { outline: none; background: #f1f5f9; border-radius: 4px; padding: 0 4px; }
     </style>
 </head>
-<body class="p-4 md:p-8">
+<body class="p-4 md:p-8 pb-24">
 
     <div class="max-w-6xl mx-auto">
         <header class="flex flex-col lg:flex-row justify-between items-start lg:items-center mb-8 gap-6">
@@ -267,29 +253,19 @@
             
             <div class="flex flex-wrap items-center gap-4 bg-white p-2 rounded-2xl border border-slate-200 shadow-sm w-full lg:w-auto">
                 <div class="flex items-center gap-1 bg-slate-100 p-1 rounded-xl flex-1 justify-between lg:justify-start">
-                    <button onclick="changeDate(-1)" class="nav-btn hover:bg-white"><i class="fa-solid fa-chevron-left"></i></button>
-                    <input type="date" id="datePicker" onchange="loadSelectedDate()" class="bg-transparent border-none font-bold text-sm px-2 outline-none text-center">
-                    <button onclick="changeDate(1)" class="nav-btn hover:bg-white"><i class="fa-solid fa-chevron-right"></i></button>
+                    <button onclick="changeDate(-1)" class="nav-btn hover:bg-white text-slate-500"><i class="fa-solid fa-chevron-left"></i></button>
+                    <input type="date" id="datePicker" onchange="loadSelectedDate()" class="bg-transparent border-none font-bold text-sm px-1 outline-none text-center text-slate-700">
+                    <button onclick="changeDate(1)" class="nav-btn hover:bg-white text-slate-500"><i class="fa-solid fa-chevron-right"></i></button>
                 </div>
                 
                 <div class="flex items-center gap-4 px-4 py-1">
                     <div class="relative flex items-center justify-center">
-                        <svg class="progress-ring" width="54" height="54">
-                            <circle class="text-slate-100" stroke-width="5" stroke="currentColor" fill="transparent" r="22" cx="27" cy="27"/>
-                            <circle id="progressCircle" class="progress-ring__circle text-indigo-600" stroke-width="5" stroke-dasharray="138.23" stroke-dashoffset="138.23" stroke-linecap="round" stroke="currentColor" fill="transparent" r="22" cx="27" cy="27"/>
-                        </svg>
+                        <svg width="54" height="54"><circle class="text-slate-100" stroke-width="5" stroke="currentColor" fill="transparent" r="22" cx="27" cy="27"/><circle id="progressCircle" class="progress-ring__circle text-indigo-600" stroke-width="5" stroke-dasharray="138.23" stroke-dashoffset="138.23" stroke-linecap="round" stroke="currentColor" fill="transparent" r="22" cx="27" cy="27"/></svg>
                         <div class="absolute text-[10px] font-black text-slate-700" id="percentDisplay">0%</div>
                     </div>
                     <div>
-                        <div class="flex items-center gap-2">
-                            <p class="text-[9px] font-black text-slate-400 uppercase leading-none">Daily Score</p>
-                            <span id="bonusBadge" class="hidden text-[8px] font-black bg-emerald-100 text-emerald-700 px-1.5 py-0.5 rounded-full">+ STRATEGY</span>
-                        </div>
-                        <div class="flex items-baseline gap-1">
-                            <p id="dailyScoreDisplay" class="text-xl font-black text-slate-800">0</p>
-                            <p class="text-slate-300 font-bold text-xs">/</p>
-                            <span contenteditable="true" id="targetDisplay" onblur="updateTarget(this)" class="text-xs font-bold text-slate-400 cursor-pointer">22</span>
-                        </div>
+                        <div class="flex items-center gap-2"><p class="text-[9px] font-black text-slate-400 uppercase leading-none">Daily Score</p><span id="bonusBadge" class="hidden text-[8px] font-black bg-emerald-100 text-emerald-700 px-1.5 py-0.5 rounded-full"></span></div>
+                        <div class="flex items-baseline gap-1"><p id="dailyScoreDisplay" class="text-xl font-black text-slate-800">0</p><p class="text-slate-300 font-bold text-xs">/</p><span contenteditable="true" id="targetDisplay" onblur="updateTarget(this)" class="text-xs font-bold text-slate-400">22</span></div>
                     </div>
                 </div>
             </div>
@@ -298,64 +274,51 @@
         <div class="grid grid-cols-1 lg:grid-cols-12 gap-8">
             <div class="lg:col-span-7 space-y-6">
                 <div class="card p-6 border-l-[10px] border-l-emerald-500 bg-emerald-50/20">
-                    <h2 class="font-black text-slate-800 uppercase text-xs tracking-wider mb-4"><i class="fa-solid fa-crosshairs text-emerald-600 mr-2"></i>The North Star</h2>
-                    <textarea id="northStar" class="w-full h-20 p-4 text-sm bg-white border border-slate-200 rounded-xl outline-none" placeholder="Vin partnership goals..."></textarea>
+                    <h2 class="font-black text-slate-800 uppercase text-xs tracking-wider mb-4">The North Star</h2>
+                    <textarea id="northStar" class="w-full h-24 p-4 text-sm bg-white border border-slate-200 rounded-xl outline-none" placeholder="Vin partnership goals..."></textarea>
                 </div>
-
-                <div class="card bg-slate-900 p-6 text-white">
-                    <div class="flex justify-between items-center mb-4 text-xs font-bold">
-                        <span id="logDateLabel"><i class="fa-solid fa-pen-nib text-indigo-400 mr-2"></i>Log</span>
-                        <span class="text-slate-500 font-mono" id="timestampDisplay">Syncing...</span>
-                    </div>
-                    <textarea id="dailyNotes" class="w-full h-72 bg-slate-800 border border-slate-700 rounded-xl p-5 text-sm text-slate-200 outline-none" placeholder="Breakthroughs..."></textarea>
+                <div class="card bg-slate-900 p-6 text-white overflow-hidden">
+                    <div class="flex justify-between items-center mb-4 text-xs font-bold"><span id="logDateLabel">Log</span><span class="text-slate-500 font-mono text-[10px]" id="timestampDisplay">Waiting...</span></div>
+                    <textarea id="dailyNotes" class="w-full h-72 bg-slate-800/50 border border-slate-700 rounded-xl p-5 text-sm text-slate-200 outline-none" placeholder="Insights..."></textarea>
                 </div>
-
                 <div class="card p-6">
-                    <h2 class="font-black text-slate-800 uppercase text-xs tracking-wider mb-6"><i class="fa-solid fa-filter text-indigo-600 mr-2"></i>Strategic Filter Audit</h2>
+                    <h2 class="font-black text-slate-800 uppercase text-xs tracking-wider mb-6">Strategic Filter Audit</h2>
                     <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
-                        <label class="flex items-center gap-3 p-3 bg-slate-50 rounded-xl cursor-pointer"><input type="checkbox" id="filter1" class="w-5 h-5 rounded text-indigo-600"><span class="text-[11px] font-bold text-slate-600">Fuels Home Impact (Cash)</span></label>
-                        <label class="flex items-center gap-3 p-3 bg-slate-50 rounded-xl cursor-pointer"><input type="checkbox" id="filter2" class="w-5 h-5 rounded text-indigo-600"><span class="text-[11px] font-bold text-slate-600">Builds Developer Brand</span></label>
-                        <label class="flex items-center gap-3 p-3 bg-slate-50 rounded-xl cursor-pointer"><input type="checkbox" id="filter3" class="w-5 h-5 rounded text-indigo-600"><span class="text-[11px] font-bold text-slate-600">Technical is Outsourced</span></label>
-                        <label class="flex items-center gap-3 p-3 bg-slate-50 rounded-xl cursor-pointer"><input type="checkbox" id="filter4" class="w-5 h-5 rounded text-indigo-600"><span class="text-[11px] font-bold text-slate-600">Investor Networking</span></label>
+                        <label class="flex items-center gap-3 p-3 bg-slate-50 rounded-xl cursor-pointer"><input type="checkbox" id="filter1" class="w-5 h-5"><span class="text-[11px] font-bold text-slate-600">Fuels Home Impact</span></label>
+                        <label class="flex items-center gap-3 p-3 bg-slate-50 rounded-xl cursor-pointer"><input type="checkbox" id="filter2" class="w-5 h-5"><span class="text-[11px] font-bold text-slate-600">Builds Developer Brand</span></label>
+                        <label class="flex items-center gap-3 p-3 bg-slate-50 rounded-xl cursor-pointer"><input type="checkbox" id="filter3" class="w-5 h-5"><span class="text-[11px] font-bold text-slate-600">Technical Outsourced</span></label>
+                        <label class="flex items-center gap-3 p-3 bg-slate-50 rounded-xl cursor-pointer"><input type="checkbox" id="filter4" class="w-5 h-5"><span class="text-[11px] font-bold text-slate-600">Investor Networking</span></label>
                     </div>
                 </div>
             </div>
 
             <div class="lg:col-span-5 space-y-6">
-                <!-- Task Tiers -->
-                <div class="card p-6 border-t-4 border-t-emerald-500 shadow-lg shadow-emerald-100/50">
-                    <div class="flex justify-between items-center mb-4 text-[10px] font-black text-slate-400 uppercase tracking-widest">
-                        <span><i class="fa-solid fa-building-circle-check text-emerald-500 mr-2"></i>Tier 3: Legacy</span>
-                        <span class="text-emerald-600 bg-emerald-50 px-2 py-1 rounded-full">+5 PTS</span>
-                    </div>
+                <div class="card p-6 border-t-4 border-t-emerald-500 shadow-lg">
+                    <div class="flex justify-between mb-4 text-[10px] font-black uppercase tracking-widest text-slate-400"><span>Legacy</span><span class="text-emerald-600 bg-emerald-50 px-2 py-1 rounded-full">+5</span></div>
                     <div id="legacyTasks" class="space-y-3 mb-5"></div>
-                    <div class="flex gap-2"><input type="text" id="legacyInput" class="flex-1 text-xs font-semibold p-3 bg-slate-50 border rounded-xl outline-none" placeholder="Legacy goal..."><button onclick="addTask('legacy')" class="bg-emerald-500 text-white p-3 rounded-xl"><i class="fa-solid fa-plus"></i></button></div>
+                    <form onsubmit="event.preventDefault(); addTask('legacy');" class="flex gap-2"><input type="text" id="legacyInput" class="flex-1 text-xs font-semibold p-3 bg-slate-50 border rounded-xl outline-none" placeholder="Legacy goal..."><button type="submit" class="bg-emerald-500 text-white px-4 rounded-xl"><i class="fa-solid fa-plus"></i></button></form>
                 </div>
-
                 <div class="card p-6 border-t-4 border-t-indigo-500">
-                    <div class="flex justify-between items-center mb-4 text-[10px] font-black text-slate-400 uppercase tracking-widest">
-                        <span><i class="fa-solid fa-network-wired text-indigo-500 mr-2"></i>Tier 2: Engine</span>
-                        <span class="text-indigo-600 bg-indigo-50 px-2 py-1 rounded-full">+3 PTS</span>
-                    </div>
+                    <div class="flex justify-between mb-4 text-[10px] font-black uppercase tracking-widest text-slate-400"><span>Engine</span><span class="text-indigo-600 bg-indigo-50 px-2 py-1 rounded-full">+3</span></div>
                     <div id="engineTasks" class="space-y-3 mb-5"></div>
-                    <div class="flex gap-2"><input type="text" id="engineInput" class="flex-1 text-xs font-semibold p-3 bg-slate-50 border rounded-xl outline-none" placeholder="Engine goal..."><button onclick="addTask('engine')" class="bg-indigo-500 text-white p-3 rounded-xl"><i class="fa-solid fa-plus"></i></button></div>
+                    <form onsubmit="event.preventDefault(); addTask('engine');" class="flex gap-2"><input type="text" id="engineInput" class="flex-1 text-xs font-semibold p-3 bg-slate-50 border rounded-xl outline-none" placeholder="Engine goal..."><button type="submit" class="bg-indigo-500 text-white px-4 rounded-xl"><i class="fa-solid fa-plus"></i></button></form>
                 </div>
-
                 <div class="card p-6 border-t-4 border-t-blue-500">
-                    <div class="flex justify-between items-center mb-4 text-[10px] font-black text-slate-400 uppercase tracking-widest">
-                        <span><i class="fa-solid fa-fire text-blue-500 mr-2"></i>Tier 1: Fuel</span>
-                        <span class="text-blue-600 bg-blue-50 px-2 py-1 rounded-full">+1 PT</span>
-                    </div>
+                    <div class="flex justify-between mb-4 text-[10px] font-black uppercase tracking-widest text-slate-400"><span>Fuel</span><span class="text-blue-600 bg-blue-50 px-2 py-1 rounded-full">+1</span></div>
                     <div id="fuelTasks" class="space-y-3 mb-5"></div>
-                    <div class="flex gap-2"><input type="text" id="fuelInput" class="flex-1 text-xs font-semibold p-3 bg-slate-50 border rounded-xl outline-none" placeholder="Fuel goal..."><button onclick="addTask('fuel')" class="bg-blue-500 text-white p-3 rounded-xl"><i class="fa-solid fa-plus"></i></button></div>
+                    <form onsubmit="event.preventDefault(); addTask('fuel');" class="flex gap-2"><input type="text" id="fuelInput" class="flex-1 text-xs font-semibold p-3 bg-slate-50 border rounded-xl outline-none" placeholder="Fuel goal..."><button type="submit" class="bg-blue-500 text-white px-4 rounded-xl"><i class="fa-solid fa-plus"></i></button></form>
                 </div>
-
-                <div class="p-6 bg-slate-200/50 rounded-3xl border border-slate-300/50 text-center">
-                    <p class="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">Weekly Performance (%)</p>
-                    <div class="flex items-end justify-center gap-1 h-12" id="trendChart"></div>
-                </div>
+                <div class="p-6 bg-slate-200/50 rounded-3xl text-center"><div class="flex items-end justify-center gap-1 h-12" id="trendChart"></div></div>
             </div>
         </div>
+
+        <!-- Sync Footer -->
+        <footer class="fixed bottom-0 left-0 w-full bg-white border-t p-4 flex flex-col md:flex-row justify-between items-center gap-4">
+            <div class="text-[10px] text-slate-400 font-mono">My Device ID: <span id="myIdDisplay" class="text-indigo-600 font-bold select-all">Loading...</span></div>
+            <div class="flex gap-4">
+                <button id="syncBtn" onclick="localStorage.getItem('sync_uid') ? clearSyncId() : setSyncId()" class="text-xs font-bold px-4 py-2 bg-slate-100 rounded-lg hover:bg-slate-200 transition-all">Sync Device</button>
+            </div>
+        </footer>
     </div>
 </body>
 </html>
