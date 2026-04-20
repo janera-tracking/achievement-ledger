@@ -55,9 +55,11 @@
                 let dayTarget = data?.target || 22;
                 if (data) {
                     const pts = { fuel: 1, engine: 3, legacy: 5 };
-                    Object.keys(data.tasks || {}).forEach(cat => {
-                        (data.tasks[cat] || []).forEach(t => { if(t.completed) dayScore += pts[cat]; });
-                    });
+                    if (data.tasks) {
+                        Object.keys(data.tasks).forEach(cat => {
+                            (data.tasks[cat] || []).forEach(t => { if(t.completed) dayScore += pts[cat]; });
+                        });
+                    }
                     dayScore += ((data.filters || []).filter(f => f).length * 2);
                 }
                 const percent = Math.min((dayScore / dayTarget) * 100, 100);
@@ -71,6 +73,7 @@
         const getActiveUid = () => overrideUid || auth?.currentUser?.uid || "OFFLINE_USER";
 
         const updateUI = () => {
+            // Ensure local object exists for current date
             if (!dailyDb[currentDate]) {
                 dailyDb[currentDate] = { dailyNotes: "", target: 22, filters: [false, false, false, false], tasks: { fuel: [], engine: [], legacy: [] } };
             }
@@ -94,8 +97,7 @@
                 if (!container) return;
                 container.innerHTML = '';
                 
-                // Ensure task category exists
-                if (!data.tasks) data.tasks = {};
+                if (!data.tasks) data.tasks = { fuel: [], engine: [], legacy: [] };
                 if (!data.tasks[cat]) data.tasks[cat] = [];
 
                 data.tasks[cat].forEach(task => {
@@ -103,9 +105,9 @@
                     div.className = `flex items-center justify-between group bg-white p-2 rounded-lg border border-transparent transition-all ${task.priority ? 'priority-task shadow-sm' : ''}`;
                     div.innerHTML = `
                         <div class="flex items-center gap-3 flex-1">
-                            <div id="check-${cat}-${task.id}" class="w-6 h-6 rounded-lg border-2 flex items-center justify-center transition-all cursor-pointer ${task.completed ? 'bg-indigo-600 border-indigo-600' : 'border-slate-200 bg-slate-50'}">
+                            <button id="check-${cat}-${task.id}" class="w-6 h-6 rounded-lg border-2 flex items-center justify-center transition-all cursor-pointer ${task.completed ? 'bg-indigo-600 border-indigo-600' : 'border-slate-200 bg-slate-50'}">
                                 ${task.completed ? '<i class="fa-solid fa-check text-xs text-white"></i>' : ''}
-                            </div>
+                            </button>
                             <span contenteditable="true" class="text-xs font-bold text-slate-700 editable-text cursor-text flex-1 ${task.completed ? 'strikethrough' : ''}">${task.text}</span>
                         </div>
                         <div class="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-all">
@@ -122,13 +124,23 @@
                 });
             });
 
+            // Score Calculation
             let score = 0;
             const ptsMapping = { fuel: 1, engine: 3, legacy: 5 };
-            Object.keys(data.tasks || {}).forEach(cat => { (data.tasks[cat] || []).forEach(t => { if(t.completed) score += ptsMapping[cat]; }); });
+            if (data.tasks) {
+                Object.keys(data.tasks).forEach(cat => { 
+                    (data.tasks[cat] || []).forEach(t => { if(t.completed) score += ptsMapping[cat]; }); 
+                });
+            }
             const filterBonus = (data.filters || []).filter(f => f).length * 2;
             score += filterBonus;
             const badge = document.getElementById('bonusBadge');
-            if (filterBonus > 0) { badge.classList.remove('hidden'); badge.innerText = `+${filterBonus} STRATEGY`; } else { badge.classList.add('hidden'); }
+            if (filterBonus > 0) { 
+                badge.classList.remove('hidden'); 
+                badge.innerText = `+${filterBonus} STRATEGY`; 
+            } else { 
+                badge.classList.add('hidden'); 
+            }
             updateScoreUI(score, data.target || 22);
             renderTrend();
         };
@@ -137,13 +149,19 @@
             const uid = getActiveUid();
             if (!uid || !db || uid === "OFFLINE_USER") {
                 localStorage.setItem('local_data', JSON.stringify({globalData, dailyDb}));
+                logDebug("Saved to local storage");
                 return;
             };
             try {
+                // Save global settings
                 await setDoc(doc(db, 'artifacts', appId, 'users', uid, 'settings', 'global'), globalData);
+                
+                // Save current day data
                 if (dailyDb[currentDate]) {
-                    await setDoc(doc(db, 'artifacts', appId, 'users', uid, 'days', currentDate), dailyDb[currentDate]);
+                    const dataToSave = JSON.parse(JSON.stringify(dailyDb[currentDate]));
+                    await setDoc(doc(db, 'artifacts', appId, 'users', uid, 'days', currentDate), dataToSave);
                 }
+                
                 const time = new Date().toLocaleTimeString([], {hour:'2-digit', minute:'2-digit', second:'2-digit'});
                 document.getElementById('timestampDisplay').innerText = `Saved: ${time}`;
                 logDebug("Cloud Sync Success");
@@ -154,31 +172,51 @@
         };
 
         const toggleTask = (cat, id) => {
+            if (!dailyDb[currentDate].tasks[cat]) return;
             const task = dailyDb[currentDate].tasks[cat].find(t => t.id === id);
-            if (task) { task.completed = !task.completed; updateUI(); syncToCloud(); }
+            if (task) { 
+                task.completed = !task.completed; 
+                updateUI(); 
+                syncToCloud(); 
+            }
         };
+
         const togglePriority = (cat, id) => {
+            if (!dailyDb[currentDate].tasks[cat]) return;
             const task = dailyDb[currentDate].tasks[cat].find(t => t.id === id);
-            if (task) { task.priority = !task.priority; updateUI(); syncToCloud(); }
+            if (task) { 
+                task.priority = !task.priority; 
+                updateUI(); 
+                syncToCloud(); 
+            }
         };
+
         const deleteTask = (cat, id) => {
+            if (!dailyDb[currentDate].tasks[cat]) return;
             dailyDb[currentDate].tasks[cat] = dailyDb[currentDate].tasks[cat].filter(t => t.id !== id);
-            updateUI(); syncToCloud();
+            updateUI(); 
+            syncToCloud();
         };
+
         const editTaskText = (cat, id, text) => {
+            if (!dailyDb[currentDate].tasks[cat]) return;
             const task = dailyDb[currentDate].tasks[cat].find(t => t.id === id);
-            if (task) { task.text = text; syncToCloud(); }
+            if (task) { 
+                task.text = text; 
+                syncToCloud(); 
+            }
         };
 
         window.addTask = (cat) => {
-            logDebug(`Attempting to add ${cat} task...`);
             const input = document.getElementById(cat + 'Input');
             const val = input.value.trim();
             if (!val) return;
 
-            // Robust initialization check
+            logDebug(`Adding task to ${cat}...`);
+
+            // Initialize structure if missing
             if (!dailyDb[currentDate]) {
-                dailyDb[currentDate] = { dailyNotes: "", target: 22, filters: [false, false, false, false], tasks: {} };
+                dailyDb[currentDate] = { dailyNotes: "", target: 22, filters: [false, false, false, false], tasks: { fuel: [], engine: [], legacy: [] } };
             }
             if (!dailyDb[currentDate].tasks) {
                 dailyDb[currentDate].tasks = { fuel: [], engine: [], legacy: [] };
@@ -187,17 +225,21 @@
                 dailyDb[currentDate].tasks[cat] = [];
             }
 
-            dailyDb[currentDate].tasks[cat].push({ 
+            // Create new task object
+            const newTask = { 
                 id: Date.now(), 
                 text: val, 
                 completed: false, 
                 priority: false 
-            });
+            };
 
+            dailyDb[currentDate].tasks[cat].push(newTask);
+            
+            // Clear and Refresh
             input.value = ''; 
             updateUI(); 
             syncToCloud();
-            logDebug(`${cat} task added.`);
+            logDebug("Task added and synced.");
         };
 
         window.updateTarget = (el) => {
@@ -220,7 +262,7 @@
         };
 
         window.setSyncId = () => {
-            const id = prompt("Enter Sync ID from your laptop:");
+            const id = prompt("Enter Sync ID:");
             if (id && id.trim().length > 5) {
                 localStorage.setItem('sync_uid', id.trim());
                 location.reload();
@@ -245,13 +287,17 @@
                 if (docSnap.exists()) { 
                     dailyDb[currentDate] = docSnap.data(); 
                 } else {
-                    if (!dailyDb[currentDate]) {
-                        dailyDb[currentDate] = { dailyNotes: "", target: 22, filters: [false, false, false, false], tasks: { fuel: [], engine: [], legacy: [] } };
-                    }
+                    // Start fresh if no data exists for this day
+                    dailyDb[currentDate] = { 
+                        dailyNotes: "", 
+                        target: 22, 
+                        filters: [false, false, false, false], 
+                        tasks: { fuel: [], engine: [], legacy: [] } 
+                    };
                 }
                 updateUI();
             }, (err) => {
-                logDebug("Listener Error: " + err.message);
+                logDebug("Sync Error: " + err.message);
                 console.error(err);
             });
         };
@@ -259,23 +305,16 @@
         const init = async () => {
             let config;
             try {
-                // Check environment or saved config
                 const envConfig = typeof __firebase_config !== 'undefined' ? __firebase_config : null;
-                const savedConfig = localStorage.getItem('fb_config');
-                
                 if (envConfig) {
                     config = JSON.parse(envConfig);
-                    logDebug("Using Environment Config");
-                } else if (savedConfig) {
-                    config = JSON.parse(savedConfig);
-                    logDebug("Using Saved Manual Config");
+                    logDebug("Connected to Cloud");
                 } else {
-                    throw new Error("No config available");
+                    throw new Error("No config");
                 }
-
                 if (typeof __app_id !== 'undefined') appId = __app_id;
             } catch (e) {
-                logDebug("Running in Local Mode (Offline)");
+                logDebug("Local Offline Mode");
                 const local = JSON.parse(localStorage.getItem('local_data') || '{}');
                 if (local.globalData) globalData = local.globalData;
                 if (local.dailyDb) dailyDb = local.dailyDb;
@@ -293,7 +332,6 @@
                 } else {
                     await signInAnonymously(auth);
                 }
-                logDebug("Auth Initialized");
             } catch (e) { logDebug("Auth Failed: " + e.message); }
 
             onAuthStateChanged(auth, async (u) => {
@@ -311,9 +349,13 @@
             });
         };
 
-        // Attach event listeners
+        // UI Event Listeners
         document.getElementById('northStar').oninput = () => { globalData.northStar = document.getElementById('northStar').value; syncToCloud(); };
-        document.getElementById('dailyNotes').oninput = () => { if (!dailyDb[currentDate]) return; dailyDb[currentDate].dailyNotes = document.getElementById('dailyNotes').value; syncToCloud(); };
+        document.getElementById('dailyNotes').oninput = () => { 
+            if (!dailyDb[currentDate]) return; 
+            dailyDb[currentDate].dailyNotes = document.getElementById('dailyNotes').value; 
+            syncToCloud(); 
+        };
         
         for(let i=1; i<=4; i++) {
             const filterEl = document.getElementById('filter'+i);
@@ -338,6 +380,7 @@
         .progress-ring__circle { transition: stroke-dashoffset 0.35s; transform: rotate(-90deg); transform-origin: 50% 50%; }
         .editable-text:focus { outline: none; background: #f1f5f9; border-radius: 4px; padding: 0 4px; }
         #debugConsole { font-family: monospace; font-size: 9px; color: #94a3b8; }
+        input[type="checkbox"] { cursor: pointer; }
     </style>
 </head>
 <body class="p-4 md:p-8 pb-40">
@@ -347,7 +390,7 @@
             <div>
                 <h1 class="text-3xl font-black tracking-tight text-slate-900">Achievement Ledger</h1>
                 <p class="text-indigo-600 font-bold uppercase text-[10px] tracking-widest mt-1">Consultant ⮕ Home Impact Developer</p>
-                <div id="debugConsole" class="mt-1">Initializing...</div>
+                <div id="debugConsole" class="mt-1">Ready</div>
             </div>
             
             <div class="flex flex-wrap items-center gap-4 bg-white p-2 rounded-2xl border border-slate-200 shadow-sm w-full lg:w-auto">
@@ -371,44 +414,89 @@
         </header>
 
         <div class="grid grid-cols-1 lg:grid-cols-12 gap-8">
+            <!-- Left Side: North Star & Log -->
             <div class="lg:col-span-7 space-y-6">
                 <div class="card p-6 border-l-[10px] border-l-emerald-500 bg-emerald-50/20">
                     <h2 class="font-black text-slate-800 uppercase text-xs tracking-wider mb-4">The North Star</h2>
                     <textarea id="northStar" class="w-full h-24 p-4 text-sm bg-white border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-emerald-500/20" placeholder="High-level vision..."></textarea>
                 </div>
+
+                <div class="card p-6 bg-white border border-slate-200">
+                    <h2 class="font-black text-slate-800 uppercase text-xs tracking-wider mb-4">Daily Filter Strategy</h2>
+                    <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                        <label class="flex items-center gap-3 p-3 bg-slate-50 rounded-xl cursor-pointer hover:bg-slate-100 transition-all border border-slate-100">
+                            <input type="checkbox" id="filter1" class="w-4 h-4 rounded text-indigo-600">
+                            <span class="text-[11px] font-bold text-slate-600">Clinical Impact Verified</span>
+                        </label>
+                        <label class="flex items-center gap-3 p-3 bg-slate-50 rounded-xl cursor-pointer hover:bg-slate-100 transition-all border border-slate-100">
+                            <input type="checkbox" id="filter2" class="w-4 h-4 rounded text-indigo-600">
+                            <span class="text-[11px] font-bold text-slate-600">Operational Leverage</span>
+                        </label>
+                        <label class="flex items-center gap-3 p-3 bg-slate-50 rounded-xl cursor-pointer hover:bg-slate-100 transition-all border border-slate-100">
+                            <input type="checkbox" id="filter3" class="w-4 h-4 rounded text-indigo-600">
+                            <span class="text-[11px] font-bold text-slate-600">Scaling Potential (Arbitrage)</span>
+                        </label>
+                        <label class="flex items-center gap-3 p-3 bg-slate-50 rounded-xl cursor-pointer hover:bg-slate-100 transition-all border border-slate-100">
+                            <input type="checkbox" id="filter4" class="w-4 h-4 rounded text-indigo-600">
+                            <span class="text-[11px] font-bold text-slate-600">Equity/Asset Building</span>
+                        </label>
+                    </div>
+                </div>
+
                 <div class="card bg-slate-900 p-6 text-white overflow-hidden">
-                    <div class="flex justify-between items-center mb-4 text-xs font-bold"><span id="logDateLabel">Log</span><span class="text-slate-500 font-mono text-[10px]" id="timestampDisplay">Syncing...</span></div>
-                    <textarea id="dailyNotes" class="w-full h-72 bg-slate-800/50 border border-slate-700 rounded-xl p-5 text-sm text-slate-200 outline-none focus:ring-2 focus:ring-indigo-500/20" placeholder="Insights..."></textarea>
+                    <div class="flex justify-between items-center mb-4 text-xs font-bold">
+                        <span id="logDateLabel">Log</span>
+                        <span class="text-slate-500 font-mono text-[10px]" id="timestampDisplay">Waiting...</span>
+                    </div>
+                    <textarea id="dailyNotes" class="w-full h-72 bg-slate-800/50 border border-slate-700 rounded-xl p-5 text-sm text-slate-200 outline-none focus:ring-2 focus:ring-indigo-500/20" placeholder="Insights, breakthroughs, or adjustments..."></textarea>
                 </div>
             </div>
 
+            <!-- Right Side: Tasks -->
             <div class="lg:col-span-5 space-y-6">
-                <!-- Tiers -->
+                <!-- Legacy Tier -->
                 <div class="card p-6 border-t-4 border-t-emerald-500 shadow-lg">
-                    <div class="flex justify-between mb-4 text-[10px] font-black uppercase tracking-widest text-slate-400"><span>Legacy</span><span class="text-emerald-600 bg-emerald-50 px-2 py-1 rounded-full">+5</span></div>
+                    <div class="flex justify-between mb-4 text-[10px] font-black uppercase tracking-widest text-slate-400">
+                        <span>Legacy (High Impact)</span>
+                        <span class="text-emerald-600 bg-emerald-50 px-2 py-1 rounded-full">+5 pts</span>
+                    </div>
                     <div id="legacyTasks" class="space-y-3 mb-5"></div>
-                    <form onsubmit="event.preventDefault(); addTask('legacy');" class="flex gap-2">
-                        <input type="text" id="legacyInput" class="flex-1 text-xs font-semibold p-3 bg-slate-50 border rounded-xl outline-none focus:border-indigo-300" placeholder="Legacy goal (High Impact)...">
+                    <form onsubmit="event.preventDefault(); window.addTask('legacy');" class="flex gap-2">
+                        <input type="text" id="legacyInput" class="flex-1 text-xs font-semibold p-3 bg-slate-50 border rounded-xl outline-none focus:border-indigo-300" placeholder="Asset building goal...">
                         <button type="submit" class="bg-emerald-500 text-white px-4 rounded-xl hover:bg-emerald-600 transition-colors"><i class="fa-solid fa-plus"></i></button>
                     </form>
                 </div>
+
+                <!-- Engine Tier -->
                 <div class="card p-6 border-t-4 border-t-indigo-500">
-                    <div class="flex justify-between mb-4 text-[10px] font-black uppercase tracking-widest text-slate-400"><span>Engine</span><span class="text-indigo-600 bg-indigo-50 px-2 py-1 rounded-full">+3</span></div>
+                    <div class="flex justify-between mb-4 text-[10px] font-black uppercase tracking-widest text-slate-400">
+                        <span>Engine (Core Business)</span>
+                        <span class="text-indigo-600 bg-indigo-50 px-2 py-1 rounded-full">+3 pts</span>
+                    </div>
                     <div id="engineTasks" class="space-y-3 mb-5"></div>
-                    <form onsubmit="event.preventDefault(); addTask('engine');" class="flex gap-2">
-                        <input type="text" id="engineInput" class="flex-1 text-xs font-semibold p-3 bg-slate-50 border rounded-xl outline-none focus:border-indigo-300" placeholder="Engine goal (Business Scaling)...">
+                    <form onsubmit="event.preventDefault(); window.addTask('engine');" class="flex gap-2">
+                        <input type="text" id="engineInput" class="flex-1 text-xs font-semibold p-3 bg-slate-50 border rounded-xl outline-none focus:border-indigo-300" placeholder="Revenue generating goal...">
                         <button type="submit" class="bg-indigo-500 text-white px-4 rounded-xl hover:bg-indigo-600 transition-colors"><i class="fa-solid fa-plus"></i></button>
                     </form>
                 </div>
+
+                <!-- Fuel Tier -->
                 <div class="card p-6 border-t-4 border-t-blue-500">
-                    <div class="flex justify-between mb-4 text-[10px] font-black uppercase tracking-widest text-slate-400"><span>Fuel</span><span class="text-blue-600 bg-blue-50 px-2 py-1 rounded-full">+1</span></div>
+                    <div class="flex justify-between mb-4 text-[10px] font-black uppercase tracking-widest text-slate-400">
+                        <span>Fuel (Foundations)</span>
+                        <span class="text-blue-600 bg-blue-50 px-2 py-1 rounded-full">+1 pt</span>
+                    </div>
                     <div id="fuelTasks" class="space-y-3 mb-5"></div>
-                    <form onsubmit="event.preventDefault(); addTask('fuel');" class="flex gap-2">
-                        <input type="text" id="fuelInput" class="flex-1 text-xs font-semibold p-3 bg-slate-50 border rounded-xl outline-none focus:border-indigo-300" placeholder="Fuel goal (Daily Habits)...">
+                    <form onsubmit="event.preventDefault(); window.addTask('fuel');" class="flex gap-2">
+                        <input type="text" id="fuelInput" class="flex-1 text-xs font-semibold p-3 bg-slate-50 border rounded-xl outline-none focus:border-indigo-300" placeholder="Daily habit/system...">
                         <button type="submit" class="bg-blue-500 text-white px-4 rounded-xl hover:bg-blue-600 transition-colors"><i class="fa-solid fa-plus"></i></button>
                     </form>
                 </div>
-                <div class="p-6 bg-slate-200/50 rounded-3xl text-center"><div class="flex items-end justify-center gap-1 h-12" id="trendChart"></div><p class="text-[9px] font-black uppercase tracking-tighter text-slate-400 mt-2">7-Day Momentum Chart</p></div>
+
+                <div class="p-6 bg-slate-200/50 rounded-3xl text-center">
+                    <div class="flex items-end justify-center gap-1 h-12" id="trendChart"></div>
+                    <p class="text-[9px] font-black uppercase tracking-tighter text-slate-400 mt-2">7-Day Momentum</p>
+                </div>
             </div>
         </div>
 
@@ -416,11 +504,10 @@
             <div class="max-w-6xl mx-auto flex flex-col md:flex-row justify-between items-center gap-4">
                 <div class="text-[10px] text-slate-400 font-mono flex items-center gap-2">
                     <div class="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></div>
-                    DEVICE: <span id="myIdDisplay" class="text-indigo-600 font-bold select-all tracking-wider">OFFLINE</span>
-                    <button onclick="location.reload()" class="ml-2 text-indigo-400 hover:text-indigo-600 underline">Refresh App</button>
+                    ID: <span id="myIdDisplay" class="text-indigo-600 font-bold select-all tracking-wider">CONNECTING</span>
                 </div>
                 <div class="flex gap-3">
-                    <button id="syncBtn" onclick="localStorage.getItem('sync_uid') ? window.clearSyncId() : window.setSyncId()" class="text-xs font-black uppercase tracking-widest px-6 py-2 bg-slate-900 text-white rounded-xl hover:bg-indigo-600 transition-all shadow-lg shadow-indigo-200">
+                    <button onclick="window.setSyncId()" class="text-xs font-black uppercase tracking-widest px-6 py-2 bg-slate-900 text-white rounded-xl hover:bg-indigo-600 transition-all shadow-lg">
                         <i class="fa-solid fa-sync mr-2"></i>
                         Sync Devices
                     </button>
@@ -429,5 +516,4 @@
         </footer>
     </div>
 </body>
-</html>
 </html>
