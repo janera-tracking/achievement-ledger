@@ -38,6 +38,7 @@
 
         const renderTrend = () => {
             const chart = document.getElementById('trendChart');
+            if (!chart) return;
             chart.innerHTML = '';
             let days = [];
             for(let i=6; i>=0; i--) {
@@ -71,12 +72,20 @@
             document.getElementById('targetDisplay').innerText = data.target || 22;
             document.getElementById('logDateLabel').innerText = currentDate === new Date().toISOString().split('T')[0] ? "Today's Achievement Log" : `Log for ${currentDate}`;
 
+            // Update ID display
+            const displayId = getActiveUid();
+            if (displayId) {
+                document.getElementById('myIdDisplay').innerText = displayId;
+            }
+
             for(let i=1; i<=4; i++) {
-                document.getElementById('filter'+i).checked = (data.filters || [])[i-1] || false;
+                const el = document.getElementById('filter'+i);
+                if (el) el.checked = (data.filters || [])[i-1] || false;
             }
 
             ['fuel', 'engine', 'legacy'].forEach(cat => {
                 const container = document.getElementById(cat + 'Tasks');
+                if (!container) return;
                 container.innerHTML = '';
                 (data.tasks?.[cat] || []).forEach(task => {
                     const div = document.createElement('div');
@@ -113,7 +122,7 @@
             renderTrend();
         };
 
-        const getActiveUid = () => overrideUid || user?.uid;
+        const getActiveUid = () => overrideUid || auth.currentUser?.uid;
 
         const syncToCloud = async () => {
             const uid = getActiveUid();
@@ -176,15 +185,17 @@
 
         window.setSyncId = () => {
             const id = prompt("Enter Sync ID from your other device:");
-            if (id && id.length > 5) {
-                localStorage.setItem('sync_uid', id);
+            if (id && id.trim().length > 5) {
+                localStorage.setItem('sync_uid', id.trim());
                 location.reload();
             }
         };
 
         window.clearSyncId = () => {
-            localStorage.removeItem('sync_uid');
-            location.reload();
+            if (confirm("Stop syncing with this ID?")) {
+                localStorage.removeItem('sync_uid');
+                location.reload();
+            }
         };
 
         const setupRealtimeListener = () => {
@@ -199,21 +210,35 @@
         };
 
         const init = async () => {
-            if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-                await signInWithCustomToken(auth, __initial_auth_token);
-            } else {
-                await signInAnonymously(auth);
+            // Priority 1: Show ID from localStorage immediately if it exists
+            if (overrideUid) {
+                document.getElementById('myIdDisplay').innerText = overrideUid;
+                document.getElementById('syncBtn').innerText = "Unlink Sync";
+            }
+
+            // Priority 2: Authenticate
+            try {
+                if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                    await signInWithCustomToken(auth, __initial_auth_token);
+                } else {
+                    await signInAnonymously(auth);
+                }
+            } catch (e) {
+                console.error("Auth error:", e);
             }
 
             onAuthStateChanged(auth, async (u) => {
                 user = u;
-                if (user) {
+                if (user || overrideUid) {
                     const uid = getActiveUid();
+                    document.getElementById('myIdDisplay').innerText = uid || "Auth Failed";
+                    
                     const globalSnap = await getDoc(doc(db, 'artifacts', appId, 'users', uid, 'settings', 'global'));
-                    if (globalSnap.exists()) globalData = globalSnap.data();
+                    if (globalSnap.exists()) {
+                        globalData = globalSnap.data();
+                    }
+                    
                     document.getElementById('datePicker').value = currentDate;
-                    document.getElementById('myIdDisplay').innerText = uid;
-                    if (overrideUid) document.getElementById('syncBtn').innerText = "Unlink Sync";
                     setupRealtimeListener();
                 }
             });
@@ -221,13 +246,17 @@
 
         document.getElementById('northStar').oninput = () => { globalData.northStar = document.getElementById('northStar').value; syncToCloud(); };
         document.getElementById('dailyNotes').oninput = () => { if (!dailyDb[currentDate]) return; dailyDb[currentDate].dailyNotes = document.getElementById('dailyNotes').value; syncToCloud(); };
+        
         for(let i=1; i<=4; i++) {
-            document.getElementById('filter'+i).onchange = () => {
-                if(!dailyDb[currentDate]) return;
-                if(!dailyDb[currentDate].filters) dailyDb[currentDate].filters = [false, false, false, false];
-                dailyDb[currentDate].filters[i-1] = document.getElementById('filter'+i).checked;
-                updateUI(); syncToCloud();
-            };
+            const filterEl = document.getElementById('filter'+i);
+            if (filterEl) {
+                filterEl.onchange = () => {
+                    if(!dailyDb[currentDate]) return;
+                    if(!dailyDb[currentDate].filters) dailyDb[currentDate].filters = [false, false, false, false];
+                    dailyDb[currentDate].filters[i-1] = filterEl.checked;
+                    updateUI(); syncToCloud();
+                };
+            }
         }
         window.onload = init;
     </script>
@@ -240,9 +269,12 @@
         .nav-btn { padding: 0.5rem 0.8rem; border-radius: 0.75rem; font-weight: 600; }
         .priority-task { border-left: 4px solid #f59e0b !important; background-color: #fffbeb !important; }
         .progress-ring__circle { transition: stroke-dashoffset 0.35s; transform: rotate(-90deg); transform-origin: 50% 50%; }
+        /* Custom scrollbar for notes */
+        textarea::-webkit-scrollbar { width: 6px; }
+        textarea::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 10px; }
     </style>
 </head>
-<body class="p-4 md:p-8 pb-24">
+<body class="p-4 md:p-8 pb-32">
 
     <div class="max-w-6xl mx-auto">
         <header class="flex flex-col lg:flex-row justify-between items-start lg:items-center mb-8 gap-6">
@@ -275,19 +307,19 @@
             <div class="lg:col-span-7 space-y-6">
                 <div class="card p-6 border-l-[10px] border-l-emerald-500 bg-emerald-50/20">
                     <h2 class="font-black text-slate-800 uppercase text-xs tracking-wider mb-4">The North Star</h2>
-                    <textarea id="northStar" class="w-full h-24 p-4 text-sm bg-white border border-slate-200 rounded-xl outline-none" placeholder="Vin partnership goals..."></textarea>
+                    <textarea id="northStar" class="w-full h-24 p-4 text-sm bg-white border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-emerald-500/20" placeholder="Vin partnership goals..."></textarea>
                 </div>
                 <div class="card bg-slate-900 p-6 text-white overflow-hidden">
                     <div class="flex justify-between items-center mb-4 text-xs font-bold"><span id="logDateLabel">Log</span><span class="text-slate-500 font-mono text-[10px]" id="timestampDisplay">Waiting...</span></div>
-                    <textarea id="dailyNotes" class="w-full h-72 bg-slate-800/50 border border-slate-700 rounded-xl p-5 text-sm text-slate-200 outline-none" placeholder="Insights..."></textarea>
+                    <textarea id="dailyNotes" class="w-full h-72 bg-slate-800/50 border border-slate-700 rounded-xl p-5 text-sm text-slate-200 outline-none focus:ring-2 focus:ring-indigo-500/20" placeholder="Insights..."></textarea>
                 </div>
                 <div class="card p-6">
                     <h2 class="font-black text-slate-800 uppercase text-xs tracking-wider mb-6">Strategic Filter Audit</h2>
                     <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
-                        <label class="flex items-center gap-3 p-3 bg-slate-50 rounded-xl cursor-pointer"><input type="checkbox" id="filter1" class="w-5 h-5"><span class="text-[11px] font-bold text-slate-600">Fuels Home Impact</span></label>
-                        <label class="flex items-center gap-3 p-3 bg-slate-50 rounded-xl cursor-pointer"><input type="checkbox" id="filter2" class="w-5 h-5"><span class="text-[11px] font-bold text-slate-600">Builds Developer Brand</span></label>
-                        <label class="flex items-center gap-3 p-3 bg-slate-50 rounded-xl cursor-pointer"><input type="checkbox" id="filter3" class="w-5 h-5"><span class="text-[11px] font-bold text-slate-600">Technical Outsourced</span></label>
-                        <label class="flex items-center gap-3 p-3 bg-slate-50 rounded-xl cursor-pointer"><input type="checkbox" id="filter4" class="w-5 h-5"><span class="text-[11px] font-bold text-slate-600">Investor Networking</span></label>
+                        <label class="flex items-center gap-3 p-3 bg-slate-50 rounded-xl cursor-pointer hover:bg-slate-100 transition-colors"><input type="checkbox" id="filter1" class="w-5 h-5 accent-indigo-600"><span class="text-[11px] font-bold text-slate-600">Fuels Home Impact</span></label>
+                        <label class="flex items-center gap-3 p-3 bg-slate-50 rounded-xl cursor-pointer hover:bg-slate-100 transition-colors"><input type="checkbox" id="filter2" class="w-5 h-5 accent-indigo-600"><span class="text-[11px] font-bold text-slate-600">Builds Developer Brand</span></label>
+                        <label class="flex items-center gap-3 p-3 bg-slate-50 rounded-xl cursor-pointer hover:bg-slate-100 transition-colors"><input type="checkbox" id="filter3" class="w-5 h-5 accent-indigo-600"><span class="text-[11px] font-bold text-slate-600">Technical Outsourced</span></label>
+                        <label class="flex items-center gap-3 p-3 bg-slate-50 rounded-xl cursor-pointer hover:bg-slate-100 transition-colors"><input type="checkbox" id="filter4" class="w-5 h-5 accent-indigo-600"><span class="text-[11px] font-bold text-slate-600">Investor Networking</span></label>
                     </div>
                 </div>
             </div>
@@ -296,27 +328,32 @@
                 <div class="card p-6 border-t-4 border-t-emerald-500 shadow-lg">
                     <div class="flex justify-between mb-4 text-[10px] font-black uppercase tracking-widest text-slate-400"><span>Legacy</span><span class="text-emerald-600 bg-emerald-50 px-2 py-1 rounded-full">+5</span></div>
                     <div id="legacyTasks" class="space-y-3 mb-5"></div>
-                    <form onsubmit="event.preventDefault(); addTask('legacy');" class="flex gap-2"><input type="text" id="legacyInput" class="flex-1 text-xs font-semibold p-3 bg-slate-50 border rounded-xl outline-none" placeholder="Legacy goal..."><button type="submit" class="bg-emerald-500 text-white px-4 rounded-xl"><i class="fa-solid fa-plus"></i></button></form>
+                    <form onsubmit="event.preventDefault(); addTask('legacy');" class="flex gap-2"><input type="text" id="legacyInput" class="flex-1 text-xs font-semibold p-3 bg-slate-50 border rounded-xl outline-none focus:border-emerald-500" placeholder="Legacy goal..."><button type="submit" class="bg-emerald-500 text-white px-4 rounded-xl hover:bg-emerald-600 transition-colors"><i class="fa-solid fa-plus"></i></button></form>
                 </div>
                 <div class="card p-6 border-t-4 border-t-indigo-500">
                     <div class="flex justify-between mb-4 text-[10px] font-black uppercase tracking-widest text-slate-400"><span>Engine</span><span class="text-indigo-600 bg-indigo-50 px-2 py-1 rounded-full">+3</span></div>
                     <div id="engineTasks" class="space-y-3 mb-5"></div>
-                    <form onsubmit="event.preventDefault(); addTask('engine');" class="flex gap-2"><input type="text" id="engineInput" class="flex-1 text-xs font-semibold p-3 bg-slate-50 border rounded-xl outline-none" placeholder="Engine goal..."><button type="submit" class="bg-indigo-500 text-white px-4 rounded-xl"><i class="fa-solid fa-plus"></i></button></form>
+                    <form onsubmit="event.preventDefault(); addTask('engine');" class="flex gap-2"><input type="text" id="engineInput" class="flex-1 text-xs font-semibold p-3 bg-slate-50 border rounded-xl outline-none focus:border-indigo-500" placeholder="Engine goal..."><button type="submit" class="bg-indigo-500 text-white px-4 rounded-xl hover:bg-indigo-600 transition-colors"><i class="fa-solid fa-plus"></i></button></form>
                 </div>
                 <div class="card p-6 border-t-4 border-t-blue-500">
                     <div class="flex justify-between mb-4 text-[10px] font-black uppercase tracking-widest text-slate-400"><span>Fuel</span><span class="text-blue-600 bg-blue-50 px-2 py-1 rounded-full">+1</span></div>
                     <div id="fuelTasks" class="space-y-3 mb-5"></div>
-                    <form onsubmit="event.preventDefault(); addTask('fuel');" class="flex gap-2"><input type="text" id="fuelInput" class="flex-1 text-xs font-semibold p-3 bg-slate-50 border rounded-xl outline-none" placeholder="Fuel goal..."><button type="submit" class="bg-blue-500 text-white px-4 rounded-xl"><i class="fa-solid fa-plus"></i></button></form>
+                    <form onsubmit="event.preventDefault(); addTask('fuel');" class="flex gap-2"><input type="text" id="fuelInput" class="flex-1 text-xs font-semibold p-3 bg-slate-50 border rounded-xl outline-none focus:border-blue-500" placeholder="Fuel goal..."><button type="submit" class="bg-blue-500 text-white px-4 rounded-xl hover:bg-blue-600 transition-colors"><i class="fa-solid fa-plus"></i></button></form>
                 </div>
-                <div class="p-6 bg-slate-200/50 rounded-3xl text-center"><div class="flex items-end justify-center gap-1 h-12" id="trendChart"></div></div>
+                <div class="p-6 bg-slate-200/50 rounded-3xl text-center"><div class="flex items-end justify-center gap-1 h-12" id="trendChart"></div><p class="text-[9px] font-black uppercase tracking-tighter text-slate-400 mt-2">7-Day Momentum Chart</p></div>
             </div>
         </div>
 
         <!-- Sync Footer -->
-        <footer class="fixed bottom-0 left-0 w-full bg-white border-t p-4 flex flex-col md:flex-row justify-between items-center gap-4">
-            <div class="text-[10px] text-slate-400 font-mono">My Device ID: <span id="myIdDisplay" class="text-indigo-600 font-bold select-all">Loading...</span></div>
-            <div class="flex gap-4">
-                <button id="syncBtn" onclick="localStorage.getItem('sync_uid') ? clearSyncId() : setSyncId()" class="text-xs font-bold px-4 py-2 bg-slate-100 rounded-lg hover:bg-slate-200 transition-all">Sync Device</button>
+        <footer class="fixed bottom-0 left-0 w-full bg-white/80 backdrop-blur-md border-t p-4 z-50">
+            <div class="max-w-6xl mx-auto flex flex-col md:flex-row justify-between items-center gap-4">
+                <div class="text-[10px] text-slate-400 font-mono flex items-center gap-2">
+                    <div class="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></div>
+                    MY DEVICE ID: <span id="myIdDisplay" class="text-indigo-600 font-bold select-all tracking-wider">LOADING...</span>
+                </div>
+                <div class="flex gap-3">
+                    <button id="syncBtn" onclick="localStorage.getItem('sync_uid') ? clearSyncId() : setSyncId()" class="text-xs font-black uppercase tracking-widest px-6 py-2 bg-slate-900 text-white rounded-xl hover:bg-indigo-600 transition-all shadow-lg shadow-indigo-200">Sync Device</button>
+                </div>
             </div>
         </footer>
     </div>
