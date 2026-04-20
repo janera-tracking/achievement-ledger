@@ -10,110 +10,113 @@
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
         import { getAuth, onAuthStateChanged, signInAnonymously, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        import { getFirestore, doc, setDoc, getDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { getFirestore, doc, setDoc, getDoc, onSnapshot, collection } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
-        // Configuration & State
+        // --- CORE STATE ---
         let db, auth, user = null;
-        let appId = typeof __app_id !== 'undefined' ? __app_id : 'ledger-v2-prod';
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'ledger-v2-stable';
         let currentDate = new Date().toISOString().split('T')[0];
-        let dailyDb = {}; 
+        
+        // Data structure
+        let dailyData = {
+            dailyNotes: "",
+            target: 22,
+            filters: [false, false, false, false],
+            tasks: { fuel: [], engine: [], legacy: [] }
+        };
         let globalData = { northStar: "" };
-        let unsubscribeDoc = null;
-
+        
         const ptsMap = { legacy: 5, engine: 3, fuel: 1 };
+        let unsubscribeDaily = null;
+        let unsubscribeGlobal = null;
 
-        const getActiveUid = () => {
-            return localStorage.getItem('sync_uid') || (auth?.currentUser?.uid) || "CONNECTING...";
+        // --- ID & SYNC LOGIC ---
+        // We use a persistent UID stored in localStorage so phone and PC can match.
+        const getPersistentUid = () => {
+            let stored = localStorage.getItem('achievement_tracker_uid');
+            if (!stored && auth?.currentUser?.uid) {
+                stored = auth.currentUser.uid;
+                localStorage.setItem('achievement_tracker_uid', stored);
+            }
+            return stored || "INITIALIZING...";
         };
 
-        const calculateScore = () => {
-            const data = dailyDb[currentDate];
-            if (!data || !data.tasks) return 0;
-            
+        const calculateCurrentScore = () => {
             let score = 0;
             // Task Points
-            Object.keys(ptsMap).forEach(cat => {
-                const tasks = data.tasks[cat] || [];
-                tasks.forEach(t => {
-                    if (t.completed) score += ptsMap[cat];
-                });
+            ['legacy', 'engine', 'fuel'].forEach(cat => {
+                const tasks = dailyData.tasks[cat] || [];
+                tasks.forEach(t => { if (t.completed) score += ptsMap[cat]; });
             });
-            // Strategy Filter Points
-            const filters = data.filters || [false, false, false, false];
-            const filterPoints = filters.filter(f => f).length * 2;
-            return score + filterPoints;
+            // Filter Points (+2 each)
+            const filters = dailyData.filters || [false, false, false, false];
+            score += filters.filter(f => f).length * 2;
+            return score;
         };
 
-        const updateUI = () => {
-            if (!dailyDb[currentDate]) {
-                dailyDb[currentDate] = { 
-                    dailyNotes: "", 
-                    target: 22, 
-                    filters: [false, false, false, false], 
-                    tasks: { fuel: [], engine: [], legacy: [] } 
-                };
-            }
-            const data = dailyDb[currentDate];
-            const currentScore = calculateScore();
-            const target = data.target || 22;
-            const percent = Math.min(Math.round((currentScore / target) * 100), 100);
+        // --- UI RENDERING ---
+        const renderUI = () => {
+            const score = calculateCurrentScore();
+            const target = dailyData.target || 22;
+            const percent = Math.min(Math.round((score / target) * 100), 100);
 
-            // Header Stats
-            document.getElementById('dailyScoreDisplay').innerText = currentScore;
+            // Update Headers
+            document.getElementById('dailyScoreDisplay').innerText = score;
             document.getElementById('targetDisplay').innerText = target;
             document.getElementById('percentText').innerText = `${percent}%`;
-            
-            const circle = document.getElementById('progressCircle');
-            const circumference = 22 * 2 * Math.PI;
-            circle.style.strokeDashoffset = circumference - (percent / 100) * circumference;
-
-            // Date & ID
+            document.getElementById('myIdDisplay').innerText = getPersistentUid();
             document.getElementById('datePicker').value = currentDate;
-            document.getElementById('myIdDisplay').innerText = getActiveUid();
+            
+            // Progress Circle
+            const circle = document.getElementById('progressCircle');
+            const circumference = 22 * 2 * Math.PI; // r=22
+            const offset = circumference - (percent / 100) * circumference;
+            circle.style.strokeDashoffset = offset;
 
-            // Content Fields
+            // Fields
             document.getElementById('northStar').value = globalData.northStar || "";
-            document.getElementById('dailyNotes').value = data.dailyNotes || "";
+            document.getElementById('dailyNotes').value = dailyData.dailyNotes || "";
 
-            // Strategy Filters
+            // Filters
             for(let i=0; i<4; i++) {
                 const el = document.getElementById('filter' + (i+1));
-                if (el) el.checked = (data.filters || [])[i];
+                if (el) el.checked = !!dailyData.filters[i];
             }
 
-            // Task List Rendering
+            // Tasks
             ['legacy', 'engine', 'fuel'].forEach(cat => {
                 const container = document.getElementById(cat + 'Tasks');
                 if (!container) return;
                 container.innerHTML = '';
                 
-                const tasks = data.tasks[cat] || [];
-                tasks.forEach(task => {
+                (dailyData.tasks[cat] || []).forEach(task => {
                     const div = document.createElement('div');
                     div.className = `flex items-center justify-between group bg-white p-3 rounded-xl border border-slate-100 transition-all ${task.priority ? 'border-l-4 border-l-amber-400 bg-amber-50/30' : ''}`;
                     div.innerHTML = `
                         <div class="flex items-center gap-3 flex-1">
-                            <button class="check-btn w-5 h-5 rounded border-2 flex items-center justify-center transition-all ${task.completed ? 'bg-emerald-500 border-emerald-500' : 'border-slate-200 bg-slate-50'}">
-                                ${task.completed ? '<i class="fa-solid fa-check text-[10px] text-white"></i>' : ''}
+                            <button class="check-btn w-6 h-6 rounded-lg border-2 flex items-center justify-center transition-all ${task.completed ? 'bg-emerald-500 border-emerald-500' : 'border-slate-200 bg-slate-50'}">
+                                ${task.completed ? '<i class="fa-solid fa-check text-[12px] text-white"></i>' : ''}
                             </button>
-                            <span contenteditable="true" class="text-sm font-medium text-slate-700 outline-none flex-1 ${task.completed ? 'line-through opacity-40' : ''}">${task.text}</span>
+                            <span contenteditable="true" class="text-sm font-semibold text-slate-700 outline-none flex-1 ${task.completed ? 'line-through opacity-40' : ''}">${task.text}</span>
                         </div>
-                        <div class="flex items-center gap-2 opacity-0 group-hover:opacity-100">
-                            <button class="p-1 hover:text-amber-500 ${task.priority ? 'text-amber-500' : 'text-slate-300'}" onclick="event.stopPropagation(); togglePriority('${cat}', ${task.id})"><i class="fa-solid fa-star text-xs"></i></button>
-                            <button class="p-1 hover:text-red-500 text-slate-300" onclick="event.stopPropagation(); deleteTask('${cat}', ${task.id})"><i class="fa-solid fa-trash text-xs"></i></button>
+                        <div class="flex items-center gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                            <button class="p-2 hover:text-amber-500 ${task.priority ? 'text-amber-500' : 'text-slate-300'}" onclick="window.toggleTaskPriority('${cat}', ${task.id})"><i class="fa-solid fa-star text-xs"></i></button>
+                            <button class="p-2 hover:text-red-500 text-slate-300" onclick="window.deleteTask('${cat}', ${task.id})"><i class="fa-solid fa-trash text-xs"></i></button>
                         </div>
                     `;
                     
                     const span = div.querySelector('span');
                     span.addEventListener('blur', () => {
-                        task.text = span.innerText;
-                        syncToCloud();
+                        if (task.text !== span.innerText) {
+                            task.text = span.innerText;
+                            saveData();
+                        }
                     });
                     
                     div.querySelector('.check-btn').onclick = () => {
                         task.completed = !task.completed;
-                        updateUI();
-                        syncToCloud();
+                        renderUI();
+                        saveData();
                     };
                     
                     container.appendChild(div);
@@ -121,29 +124,57 @@
             });
         };
 
-        const syncToCloud = async () => {
-            const uid = getActiveUid();
-            if (uid.includes("...") || !db) return;
+        // --- DATA PERSISTENCE ---
+        const saveData = async () => {
+            const uid = getPersistentUid();
+            if (!db || uid.includes("...")) return;
             
             try {
                 document.getElementById('syncStatus').innerText = "Syncing...";
+                await setDoc(doc(db, 'artifacts', appId, 'users', uid, 'days', currentDate), dailyData);
                 await setDoc(doc(db, 'artifacts', appId, 'users', uid, 'settings', 'global'), globalData);
-                await setDoc(doc(db, 'artifacts', appId, 'users', uid, 'days', currentDate), dailyDb[currentDate]);
-                document.getElementById('syncStatus').innerText = "Saved";
-                setTimeout(() => { if(document.getElementById('syncStatus').innerText === "Saved") document.getElementById('syncStatus').innerText = ""; }, 2000);
+                document.getElementById('syncStatus').innerText = "Synced";
             } catch (e) {
-                console.error(e);
-                document.getElementById('syncStatus').innerText = "Sync Error";
+                console.error("Save Error:", e);
+                document.getElementById('syncStatus').innerText = "Offline";
             }
         };
 
+        const setupListeners = (uid) => {
+            if (!db || !uid || uid.includes("...")) return;
+
+            if (unsubscribeDaily) unsubscribeDaily();
+            if (unsubscribeGlobal) unsubscribeGlobal();
+
+            // Listen to Today
+            unsubscribeDaily = onSnapshot(doc(db, 'artifacts', appId, 'users', uid, 'days', currentDate), (snap) => {
+                if (snap.exists()) {
+                    dailyData = snap.data();
+                    renderUI();
+                } else {
+                    // Initialize new day
+                    dailyData = { dailyNotes: "", target: 22, filters: [false, false, false, false], tasks: { fuel: [], engine: [], legacy: [] } };
+                    renderUI();
+                }
+            }, (err) => console.error(err));
+
+            // Listen to Global Settings (North Star)
+            unsubscribeGlobal = onSnapshot(doc(db, 'artifacts', appId, 'users', uid, 'settings', 'global'), (snap) => {
+                if (snap.exists()) {
+                    globalData = snap.data();
+                    renderUI();
+                }
+            });
+        };
+
+        // --- ACTIONS ---
         window.addTask = (cat) => {
             const input = document.getElementById(cat + 'Input');
             const val = input.value.trim();
             if (!val) return;
 
-            if (!dailyDb[currentDate].tasks[cat]) dailyDb[currentDate].tasks[cat] = [];
-            dailyDb[currentDate].tasks[cat].push({
+            if (!dailyData.tasks[cat]) dailyData.tasks[cat] = [];
+            dailyData.tasks[cat].push({
                 id: Date.now(),
                 text: val,
                 completed: false,
@@ -151,257 +182,282 @@
             });
 
             input.value = '';
-            updateUI();
-            syncToCloud();
-        };
-
-        window.togglePriority = (cat, id) => {
-            const task = dailyDb[currentDate].tasks[cat].find(t => t.id === id);
-            if (task) { task.priority = !task.priority; updateUI(); syncToCloud(); }
+            renderUI();
+            saveData();
         };
 
         window.deleteTask = (cat, id) => {
-            dailyDb[currentDate].tasks[cat] = dailyDb[currentDate].tasks[cat].filter(t => t.id !== id);
-            updateUI();
-            syncToCloud();
+            dailyData.tasks[cat] = dailyData.tasks[cat].filter(t => t.id !== id);
+            renderUI();
+            saveData();
+        };
+
+        window.toggleTaskPriority = (cat, id) => {
+            const task = dailyData.tasks[cat].find(t => t.id === id);
+            if (task) {
+                task.priority = !task.priority;
+                renderUI();
+                saveData();
+            }
         };
 
         window.updateFilter = (index, checked) => {
-            if (!dailyDb[currentDate].filters) dailyDb[currentDate].filters = [false, false, false, false];
-            dailyDb[currentDate].filters[index] = checked;
-            updateUI();
-            syncToCloud();
+            if (!dailyData.filters) dailyData.filters = [false, false, false, false];
+            dailyData.filters[index] = checked;
+            renderUI();
+            saveData();
         };
 
         window.changeDate = (offset) => {
             const d = new Date(currentDate);
             d.setDate(d.getDate() + offset);
             currentDate = d.toISOString().split('T')[0];
-            setupListener();
+            setupListeners(getPersistentUid());
         };
 
-        window.setManualId = () => {
-            const id = prompt("Enter Device ID to sync with:");
+        window.syncDevice = () => {
+            const id = prompt("Enter Device ID to Link (e.g., from your computer):");
             if (id && id.trim().length > 5) {
-                localStorage.setItem('sync_uid', id.trim());
-                location.reload();
+                localStorage.setItem('achievement_tracker_uid', id.trim());
+                window.location.reload();
             }
         };
 
-        const setupListener = () => {
-            const uid = getActiveUid();
-            if (uid.includes("...") || !db) return;
-            
-            if (unsubscribeDoc) unsubscribeDoc();
-            unsubscribeDoc = onSnapshot(doc(db, 'artifacts', appId, 'users', uid, 'days', currentDate), (snap) => {
-                if (snap.exists()) {
-                    dailyDb[currentDate] = snap.data();
-                    updateUI();
-                }
-            });
-        };
-
-        const init = async () => {
+        // --- INITIALIZATION ---
+        const startApp = async () => {
             try {
-                const config = JSON.parse(__firebase_config);
-                const app = initializeApp(config);
+                const firebaseConfig = JSON.parse(__firebase_config);
+                const app = initializeApp(firebaseConfig);
                 auth = getAuth(app);
                 db = getFirestore(app);
 
+                // Auth
                 if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
                     await signInWithCustomToken(auth, __initial_auth_token);
                 } else {
                     await signInAnonymously(auth);
                 }
 
-                onAuthStateChanged(auth, async (u) => {
+                onAuthStateChanged(auth, (u) => {
                     user = u;
-                    const uid = getActiveUid();
-                    const globalSnap = await getDoc(doc(db, 'artifacts', appId, 'users', uid, 'settings', 'global'));
-                    if (globalSnap.exists()) globalData = globalSnap.data();
-                    setupListener();
-                    updateUI();
+                    const uid = getPersistentUid();
+                    setupListeners(uid);
+                    renderUI();
                 });
-            } catch (e) {
-                document.getElementById('myIdDisplay').innerText = "OFFLINE_MODE";
-                updateUI();
+
+            } catch (err) {
+                console.error("Init Error", err);
+                document.getElementById('myIdDisplay').innerText = "OFFLINE";
             }
         };
 
-        document.getElementById('northStar').oninput = (e) => { globalData.northStar = e.target.value; syncToCloud(); };
-        document.getElementById('dailyNotes').oninput = (e) => { dailyDb[currentDate].dailyNotes = e.target.value; syncToCloud(); };
-        
-        window.onload = init;
+        // Textarea Handlers
+        document.getElementById('northStar').addEventListener('input', (e) => {
+            globalData.northStar = e.target.value;
+            saveData();
+        });
+        document.getElementById('dailyNotes').addEventListener('input', (e) => {
+            dailyData.dailyNotes = e.target.value;
+            saveData();
+        });
+
+        window.onload = startApp;
     </script>
 
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;600;700;800&display=swap');
-        body { font-family: 'Plus Jakarta Sans', sans-serif; background-color: #f3f7f9; }
-        .glass-card { background: white; border-radius: 1.5rem; border: 1px solid #e2e8f0; }
-        .tier-card { transition: transform 0.2s; }
-        .tier-card:hover { transform: translateY(-2px); }
-        .progress-ring__circle { transition: stroke-dashoffset 0.5s ease-in-out; transform: rotate(-90deg); transform-origin: 50% 50%; }
+        body { font-family: 'Plus Jakarta Sans', sans-serif; background-color: #f8fafc; color: #0f172a; }
+        .glass-card { background: white; border-radius: 1.5rem; border: 1px solid #e2e8f0; box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.05); }
+        .progress-ring__circle { transition: stroke-dashoffset 0.6s cubic-bezier(0.4, 0, 0.2, 1); transform: rotate(-90deg); transform-origin: 50% 50%; }
         input[type="checkbox"] { accent-color: #10b981; }
-        ::-webkit-scrollbar { width: 6px; }
-        ::-webkit-scrollbar-track { background: transparent; }
-        ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 10px; }
+        .tier-card { transition: transform 0.2s ease; }
+        .tier-card:focus-within { transform: translateY(-2px); border-color: #cbd5e1; }
     </style>
 </head>
-<body class="p-4 md:p-10 pb-24">
+<body class="p-4 md:p-10 pb-32">
 
     <div class="max-w-7xl mx-auto">
-        <!-- Header -->
-        <header class="flex flex-col md:flex-row justify-between items-start md:items-center gap-6 mb-10">
+        <!-- TOP NAV -->
+        <header class="flex flex-col md:flex-row justify-between items-start md:items-center gap-6 mb-12">
             <div>
-                <h1 class="text-4xl font-extrabold text-slate-900 tracking-tight">Achievement Ledger</h1>
-                <p class="text-indigo-600 font-bold uppercase text-[10px] tracking-[0.2em] mt-1">Consultant ⮕ Home Impact Developer</p>
+                <h1 class="text-4xl font-extrabold tracking-tight text-slate-900">Achievement Ledger</h1>
+                <div class="flex items-center gap-2 mt-2">
+                    <span class="bg-indigo-600 text-white text-[9px] font-black px-2 py-0.5 rounded">STRATEGY</span>
+                    <p class="text-slate-400 font-bold uppercase text-[10px] tracking-widest">Consultant ⮕ Developer Path</p>
+                </div>
             </div>
 
-            <div class="flex items-center gap-4">
-                <div class="bg-white p-2 px-4 rounded-2xl border flex items-center gap-4">
-                    <button onclick="changeDate(-1)" class="text-slate-400 hover:text-slate-900"><i class="fa-solid fa-chevron-left"></i></button>
-                    <input type="date" id="datePicker" onchange="currentDate=this.value; setupListener();" class="font-bold text-slate-700 outline-none cursor-pointer">
-                    <button onclick="changeDate(1)" class="text-slate-400 hover:text-slate-900"><i class="fa-solid fa-chevron-right"></i></button>
+            <div class="flex flex-wrap items-center gap-4">
+                <!-- Date Switcher -->
+                <div class="bg-white p-2 px-4 rounded-2xl border flex items-center gap-4 shadow-sm">
+                    <button onclick="changeDate(-1)" class="text-slate-400 hover:text-slate-900 transition-colors"><i class="fa-solid fa-chevron-left"></i></button>
+                    <input type="date" id="datePicker" onchange="currentDate=this.value; setupListeners(getPersistentUid());" class="font-bold text-slate-700 outline-none bg-transparent cursor-pointer">
+                    <button onclick="changeDate(1)" class="text-slate-400 hover:text-slate-900 transition-colors"><i class="fa-solid fa-chevron-right"></i></button>
                 </div>
 
-                <div class="bg-white p-3 px-6 rounded-2xl border flex items-center gap-6">
+                <!-- Score Meter -->
+                <div class="bg-white p-3 px-6 rounded-2xl border flex items-center gap-6 shadow-sm">
                     <div class="relative flex items-center justify-center">
-                        <svg width="50" height="50">
-                            <circle class="text-slate-100" stroke-width="4" stroke="currentColor" fill="transparent" r="22" cx="25" cy="25"/>
-                            <circle id="progressCircle" class="progress-ring__circle text-emerald-500" stroke-width="4" stroke-dasharray="138.23" stroke-dashoffset="138.23" stroke-linecap="round" stroke="currentColor" fill="transparent" r="22" cx="25" cy="25"/>
+                        <svg width="56" height="56">
+                            <circle class="text-slate-100" stroke-width="5" stroke="currentColor" fill="transparent" r="22" cx="28" cy="28"/>
+                            <circle id="progressCircle" class="progress-ring__circle text-emerald-500" stroke-width="5" stroke-dasharray="138.23" stroke-dashoffset="138.23" stroke-linecap="round" stroke="currentColor" fill="transparent" r="22" cx="28" cy="28"/>
                         </svg>
-                        <span id="percentText" class="absolute text-[10px] font-bold text-slate-800">0%</span>
+                        <span id="percentText" class="absolute text-[11px] font-black text-slate-800">0%</span>
                     </div>
                     <div>
-                        <p class="text-[9px] font-black text-slate-400 uppercase tracking-tighter">Daily Score</p>
+                        <p class="text-[9px] font-black text-slate-400 uppercase tracking-tighter">Day Yield</p>
                         <div class="flex items-baseline gap-1">
-                            <span id="dailyScoreDisplay" class="text-2xl font-black text-slate-900">0</span>
-                            <span class="text-slate-300 font-bold">/</span>
-                            <span id="targetDisplay" class="text-slate-400 font-bold">22</span>
+                            <span id="dailyScoreDisplay" class="text-3xl font-black text-slate-900 leading-none">0</span>
+                            <span class="text-slate-300 font-bold text-lg">/</span>
+                            <span id="targetDisplay" class="text-slate-400 font-bold text-lg">22</span>
                         </div>
                     </div>
                 </div>
             </div>
         </header>
 
-        <div class="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
+        <div class="grid grid-cols-1 lg:grid-cols-12 gap-8">
             
-            <!-- Left Column: Strategy -->
+            <!-- LEFT: CORE STRATEGY -->
             <div class="lg:col-span-7 space-y-8">
-                <!-- North Star -->
-                <div class="glass-card p-8 border-l-[12px] border-emerald-500 shadow-sm">
-                    <div class="flex items-center gap-2 mb-4">
-                        <i class="fa-solid fa-compass text-emerald-500"></i>
-                        <h2 class="font-bold uppercase text-xs tracking-widest text-slate-800">The North Star</h2>
-                    </div>
-                    <textarea id="northStar" class="w-full h-24 text-slate-600 text-lg font-medium bg-transparent outline-none resize-none leading-relaxed" placeholder="Become a residential real estate developer..."></textarea>
-                </div>
-
-                <!-- Daily Filters -->
-                <div class="glass-card p-8">
-                    <h2 class="font-bold uppercase text-xs tracking-widest text-slate-400 mb-6">Strategic Filters (+2 pts each)</h2>
-                    <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                        <label class="flex items-center gap-4 p-4 bg-slate-50 rounded-2xl border border-slate-100 cursor-pointer hover:bg-emerald-50/50 transition-all">
-                            <input type="checkbox" id="filter1" onchange="updateFilter(0, this.checked)" class="w-5 h-5 rounded border-slate-300">
-                            <span class="text-xs font-bold text-slate-700">Clinical Impact Verified</span>
-                        </label>
-                        <label class="flex items-center gap-4 p-4 bg-slate-50 rounded-2xl border border-slate-100 cursor-pointer hover:bg-emerald-50/50 transition-all">
-                            <input type="checkbox" id="filter2" onchange="updateFilter(1, this.checked)" class="w-5 h-5 rounded border-slate-300">
-                            <span class="text-xs font-bold text-slate-700">Operational Leverage</span>
-                        </label>
-                        <label class="flex items-center gap-4 p-4 bg-slate-50 rounded-2xl border border-slate-100 cursor-pointer hover:bg-emerald-50/50 transition-all">
-                            <input type="checkbox" id="filter3" onchange="updateFilter(2, this.checked)" class="w-5 h-5 rounded border-slate-300">
-                            <span class="text-xs font-bold text-slate-700">Scaling Potential</span>
-                        </label>
-                        <label class="flex items-center gap-4 p-4 bg-slate-50 rounded-2xl border border-slate-100 cursor-pointer hover:bg-emerald-50/50 transition-all">
-                            <input type="checkbox" id="filter4" onchange="updateFilter(3, this.checked)" class="w-5 h-5 rounded border-slate-300">
-                            <span class="text-xs font-bold text-slate-700">Equity/Asset Building</span>
-                        </label>
-                    </div>
-                </div>
-
-                <!-- Log -->
-                <div class="bg-slate-900 rounded-[2rem] p-8 text-white shadow-2xl relative overflow-hidden">
-                    <div class="flex justify-between items-center mb-6 relative z-10">
-                        <div class="flex items-center gap-2">
-                            <i class="fa-solid fa-rocket text-indigo-400"></i>
-                            <h2 class="text-xs font-bold uppercase tracking-widest text-slate-400">Log</h2>
+                <!-- North Star Card -->
+                <div class="glass-card p-8 border-l-[12px] border-emerald-500">
+                    <div class="flex items-center gap-3 mb-4">
+                        <div class="w-8 h-8 rounded-lg bg-emerald-500 flex items-center justify-center text-white text-xs">
+                            <i class="fa-solid fa-location-crosshairs"></i>
                         </div>
-                        <span id="syncStatus" class="text-[10px] font-mono text-indigo-400">Waiting...</span>
+                        <h2 class="font-black uppercase text-xs tracking-[0.2em] text-slate-800">The North Star Vision</h2>
                     </div>
-                    <textarea id="dailyNotes" class="w-full h-64 bg-slate-800/40 rounded-2xl p-6 text-slate-300 border border-slate-700/50 outline-none focus:border-indigo-500/50 transition-all" placeholder="Insights, breakthroughs, daily wins..."></textarea>
-                    <div class="absolute top-0 right-0 w-32 h-32 bg-indigo-600/10 blur-[100px]"></div>
+                    <textarea id="northStar" class="w-full h-24 text-slate-600 text-xl font-bold bg-transparent outline-none resize-none placeholder:text-slate-200" placeholder="Describe the ultimate objective..."></textarea>
+                </div>
+
+                <!-- Strategic Filters -->
+                <div class="glass-card p-8">
+                    <div class="flex items-center gap-3 mb-6">
+                        <div class="w-8 h-8 rounded-lg bg-slate-900 flex items-center justify-center text-white text-xs">
+                            <i class="fa-solid fa-filter"></i>
+                        </div>
+                        <h2 class="font-black uppercase text-xs tracking-[0.2em] text-slate-800">Strategic Filters <span class="ml-2 text-indigo-500">+2 pts each</span></h2>
+                    </div>
+                    <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                        <label class="flex items-center gap-4 p-4 bg-slate-50 rounded-2xl border border-slate-100 cursor-pointer hover:bg-emerald-50/50 transition-all group">
+                            <input type="checkbox" id="filter1" onchange="updateFilter(0, this.checked)" class="w-5 h-5 rounded-md">
+                            <span class="text-xs font-black text-slate-700 group-hover:text-emerald-700">CLINICAL IMPACT</span>
+                        </label>
+                        <label class="flex items-center gap-4 p-4 bg-slate-50 rounded-2xl border border-slate-100 cursor-pointer hover:bg-emerald-50/50 transition-all group">
+                            <input type="checkbox" id="filter2" onchange="updateFilter(1, this.checked)" class="w-5 h-5 rounded-md">
+                            <span class="text-xs font-black text-slate-700 group-hover:text-emerald-700">LEVERAGE RATIO</span>
+                        </label>
+                        <label class="flex items-center gap-4 p-4 bg-slate-50 rounded-2xl border border-slate-100 cursor-pointer hover:bg-emerald-50/50 transition-all group">
+                            <input type="checkbox" id="filter3" onchange="updateFilter(2, this.checked)" class="w-5 h-5 rounded-md">
+                            <span class="text-xs font-black text-slate-700 group-hover:text-emerald-700">SCALABILITY</span>
+                        </label>
+                        <label class="flex items-center gap-4 p-4 bg-slate-50 rounded-2xl border border-slate-100 cursor-pointer hover:bg-emerald-50/50 transition-all group">
+                            <input type="checkbox" id="filter4" onchange="updateFilter(3, this.checked)" class="w-5 h-5 rounded-md">
+                            <span class="text-xs font-black text-slate-700 group-hover:text-emerald-700">ASSET EQUITY</span>
+                        </label>
+                    </div>
+                </div>
+
+                <!-- Daily Narrative Log -->
+                <div class="bg-slate-900 rounded-[2.5rem] p-8 text-white shadow-2xl relative overflow-hidden group">
+                    <div class="flex justify-between items-center mb-6 relative z-10">
+                        <div class="flex items-center gap-3">
+                            <div class="w-8 h-8 rounded-lg bg-indigo-500/20 flex items-center justify-center text-indigo-400 text-xs">
+                                <i class="fa-solid fa-feather-pointed"></i>
+                            </div>
+                            <h2 class="text-xs font-black uppercase tracking-[0.2em] text-slate-400">Daily Ledger Log</h2>
+                        </div>
+                        <span id="syncStatus" class="text-[10px] font-black uppercase tracking-widest text-indigo-400 px-3 py-1 bg-indigo-500/10 rounded-full">Standby</span>
+                    </div>
+                    <textarea id="dailyNotes" class="w-full h-80 bg-slate-800/40 rounded-3xl p-6 text-slate-200 border border-slate-700/50 outline-none focus:border-indigo-500/50 transition-all resize-none leading-relaxed" placeholder="Document decisions, setbacks, and tactical wins..."></textarea>
+                    
+                    <!-- Decorative background element -->
+                    <div class="absolute -bottom-20 -right-20 w-64 h-64 bg-indigo-600/10 blur-[120px] pointer-events-none group-hover:bg-indigo-600/20 transition-all"></div>
                 </div>
             </div>
 
-            <!-- Right Column: Tiers -->
+            <!-- RIGHT: EXECUTION TIERS -->
             <div class="lg:col-span-5 space-y-6">
-                <!-- Legacy -->
+                
+                <!-- Tier 3: Legacy -->
                 <div class="glass-card p-6 border-t-8 border-emerald-500 tier-card">
                     <div class="flex justify-between items-center mb-6">
-                        <h3 class="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400">Tier 3: Legacy</h3>
-                        <span class="text-[10px] font-bold bg-emerald-50 text-emerald-600 px-3 py-1 rounded-full">+5 PTS</span>
+                        <div class="flex items-center gap-2">
+                            <i class="fa-solid fa-crown text-emerald-500 text-sm"></i>
+                            <h3 class="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400">Tier 3: Legacy</h3>
+                        </div>
+                        <span class="text-[10px] font-black bg-emerald-50 text-emerald-600 px-3 py-1 rounded-lg">+5 PTS</span>
                     </div>
                     <div id="legacyTasks" class="space-y-3 mb-4"></div>
                     <div class="relative">
-                        <input type="text" id="legacyInput" class="w-full p-4 pr-12 bg-slate-50 border border-slate-100 rounded-2xl text-sm font-semibold outline-none focus:border-emerald-300" placeholder="Legacy goal...">
-                        <button onclick="addTask('legacy')" class="absolute right-2 top-2 w-10 h-10 bg-emerald-500 text-white rounded-xl hover:bg-emerald-600"><i class="fa-solid fa-plus"></i></button>
+                        <input type="text" id="legacyInput" onkeydown="if(event.key==='Enter') addTask('legacy')" class="w-full p-4 pr-14 bg-slate-50 border border-slate-100 rounded-2xl text-sm font-bold outline-none focus:border-emerald-300 focus:bg-white transition-all" placeholder="High impact milestone...">
+                        <button onclick="addTask('legacy')" class="absolute right-2 top-2 w-10 h-10 bg-emerald-500 text-white rounded-xl hover:bg-emerald-600 transition-colors shadow-lg shadow-emerald-500/20"><i class="fa-solid fa-plus"></i></button>
                     </div>
                 </div>
 
-                <!-- Engine -->
+                <!-- Tier 2: Engine -->
                 <div class="glass-card p-6 border-t-8 border-indigo-500 tier-card">
                     <div class="flex justify-between items-center mb-6">
-                        <h3 class="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400">Tier 2: Engine</h3>
-                        <span class="text-[10px] font-bold bg-indigo-50 text-indigo-600 px-3 py-1 rounded-full">+3 PTS</span>
+                        <div class="flex items-center gap-2">
+                            <i class="fa-solid fa-gears text-indigo-500 text-sm"></i>
+                            <h3 class="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400">Tier 2: Engine</h3>
+                        </div>
+                        <span class="text-[10px] font-black bg-indigo-50 text-indigo-600 px-3 py-1 rounded-lg">+3 PTS</span>
                     </div>
                     <div id="engineTasks" class="space-y-3 mb-4"></div>
                     <div class="relative">
-                        <input type="text" id="engineInput" class="w-full p-4 pr-12 bg-slate-50 border border-slate-100 rounded-2xl text-sm font-semibold outline-none focus:border-indigo-300" placeholder="Engine goal...">
-                        <button onclick="addTask('engine')" class="absolute right-2 top-2 w-10 h-10 bg-indigo-500 text-white rounded-xl hover:bg-indigo-600"><i class="fa-solid fa-plus"></i></button>
+                        <input type="text" id="engineInput" onkeydown="if(event.key==='Enter') addTask('engine')" class="w-full p-4 pr-14 bg-slate-50 border border-slate-100 rounded-2xl text-sm font-bold outline-none focus:border-indigo-300 focus:bg-white transition-all" placeholder="Core operational task...">
+                        <button onclick="addTask('engine')" class="absolute right-2 top-2 w-10 h-10 bg-indigo-500 text-white rounded-xl hover:bg-indigo-600 transition-colors shadow-lg shadow-indigo-500/20"><i class="fa-solid fa-plus"></i></button>
                     </div>
                 </div>
 
-                <!-- Fuel -->
+                <!-- Tier 1: Fuel -->
                 <div class="glass-card p-6 border-t-8 border-blue-500 tier-card">
                     <div class="flex justify-between items-center mb-6">
-                        <h3 class="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400">Tier 1: Fuel</h3>
-                        <span class="text-[10px] font-bold bg-blue-50 text-blue-600 px-3 py-1 rounded-full">+1 PT</span>
+                        <div class="flex items-center gap-2">
+                            <i class="fa-solid fa-bolt text-blue-500 text-sm"></i>
+                            <h3 class="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400">Tier 1: Fuel</h3>
+                        </div>
+                        <span class="text-[10px] font-black bg-blue-50 text-blue-600 px-3 py-1 rounded-lg">+1 PT</span>
                     </div>
                     <div id="fuelTasks" class="space-y-3 mb-4"></div>
                     <div class="relative">
-                        <input type="text" id="fuelInput" class="w-full p-4 pr-12 bg-slate-50 border border-slate-100 rounded-2xl text-sm font-semibold outline-none focus:border-blue-300" placeholder="Fuel goal...">
-                        <button onclick="addTask('fuel')" class="absolute right-2 top-2 w-10 h-10 bg-blue-500 text-white rounded-xl hover:bg-blue-600"><i class="fa-solid fa-plus"></i></button>
+                        <input type="text" id="fuelInput" onkeydown="if(event.key==='Enter') addTask('fuel')" class="w-full p-4 pr-14 bg-slate-50 border border-slate-100 rounded-2xl text-sm font-bold outline-none focus:border-blue-300 focus:bg-white transition-all" placeholder="Maintenance or quick win...">
+                        <button onclick="addTask('fuel')" class="absolute right-2 top-2 w-10 h-10 bg-blue-500 text-white rounded-xl hover:bg-blue-600 transition-colors shadow-lg shadow-blue-500/20"><i class="fa-solid fa-plus"></i></button>
                     </div>
                 </div>
 
-                <!-- Weekly Performance Placeholder -->
-                <div class="glass-card p-8 bg-slate-50/50 border-dashed border-2 flex flex-col items-center justify-center text-center">
-                    <h3 class="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400 mb-2">Weekly Performance (%)</h3>
-                    <div class="w-full h-24 flex items-end justify-between gap-1 mt-4">
-                        <div class="w-full bg-slate-200 rounded-t-sm" style="height: 40%"></div>
-                        <div class="w-full bg-slate-200 rounded-t-sm" style="height: 60%"></div>
-                        <div class="w-full bg-slate-200 rounded-t-sm" style="height: 30%"></div>
-                        <div class="w-full bg-slate-200 rounded-t-sm" style="height: 80%"></div>
-                        <div class="w-full bg-indigo-400 rounded-t-sm" style="height: 90%"></div>
-                        <div class="w-full bg-slate-200 rounded-t-sm" style="height: 50%"></div>
-                        <div class="w-full bg-slate-100 rounded-t-sm" style="height: 10%"></div>
+                <!-- Visual Chart Placeholder (Aesthetics) -->
+                <div class="glass-card p-8 bg-white border-dashed border-2 flex flex-col items-center justify-center text-center opacity-80">
+                    <h3 class="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400 mb-6">Weekly Yield Consistency</h3>
+                    <div class="w-full h-32 flex items-end justify-between gap-2 px-2">
+                        <div class="w-full bg-slate-100 rounded-t-xl" style="height: 35%"></div>
+                        <div class="w-full bg-slate-100 rounded-t-xl" style="height: 65%"></div>
+                        <div class="w-full bg-slate-100 rounded-t-xl" style="height: 45%"></div>
+                        <div class="w-full bg-slate-100 rounded-t-xl" style="height: 85%"></div>
+                        <div class="w-full bg-emerald-400 rounded-t-xl shadow-lg shadow-emerald-500/20" style="height: 95%"></div>
+                        <div class="w-full bg-slate-100 rounded-t-xl" style="height: 55%"></div>
+                        <div class="w-full bg-slate-50 rounded-t-xl" style="height: 20%"></div>
                     </div>
                 </div>
             </div>
         </div>
     </div>
 
-    <!-- Sync Bar -->
-    <div class="fixed bottom-0 left-0 w-full bg-white/80 backdrop-blur-md border-t p-4 z-50">
+    <!-- PERSISTENT SYNC BAR -->
+    <div class="fixed bottom-0 left-0 w-full bg-white/90 backdrop-blur-xl border-t border-slate-200 p-4 md:p-6 z-50">
         <div class="max-w-7xl mx-auto flex flex-col md:flex-row justify-between items-center gap-4">
-            <div class="flex items-center gap-2 text-[10px] font-mono">
-                <div class="w-2 h-2 rounded-full bg-emerald-500"></div>
-                <span class="text-slate-400 uppercase">My Device ID:</span>
-                <span id="myIdDisplay" class="text-indigo-600 font-bold select-all">CONNECTING...</span>
+            <div class="flex items-center gap-4">
+                <div class="flex items-center gap-2 px-4 py-2 bg-slate-900 rounded-2xl text-[10px] font-mono text-white">
+                    <span class="text-slate-500 uppercase font-black">Sync ID:</span>
+                    <span id="myIdDisplay" class="text-indigo-400 font-bold tracking-tight select-all">CONNECTING...</span>
+                </div>
+                <p class="hidden md:block text-[10px] font-black text-slate-400 uppercase tracking-widest">Across Mobile & Desktop</p>
             </div>
-            <button onclick="setManualId()" class="bg-slate-900 text-white text-[10px] font-black uppercase tracking-widest px-8 py-3 rounded-xl hover:bg-indigo-600 transition-all shadow-lg">
-                Sync Device
+            
+            <button onclick="syncDevice()" class="w-full md:w-auto bg-indigo-600 text-white text-xs font-black uppercase tracking-[0.2em] px-10 py-4 rounded-2xl hover:bg-indigo-700 hover:scale-[1.02] active:scale-[0.98] transition-all shadow-xl shadow-indigo-600/20">
+                Sync New Device
             </button>
         </div>
     </div>
