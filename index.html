@@ -3,370 +3,344 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Achievement Ledger | Strategic Roadmap</title>
+    <title>Achievement Ledger | Sync Fixed</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
     
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
         import { getAuth, onAuthStateChanged, signInAnonymously, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        import { getFirestore, doc, setDoc, onSnapshot, getDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { getFirestore, doc, setDoc, onSnapshot, getDoc, enableIndexedDbPersistence } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
-        // --- CONFIG & STATE ---
+        // --- 1. INITIALIZATION & IMMEDIATE ID ---
         const firebaseConfig = JSON.parse(__firebase_config);
-        const appId = typeof __app_id !== 'undefined' ? __app_id : 'ledger-v3-stable';
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'ledger-v4-prod';
         const app = initializeApp(firebaseConfig);
         const auth = getAuth(app);
         const db = getFirestore(app);
 
+        // Get ID immediately from storage or create it
+        let currentUserId = localStorage.getItem('ledger_uid');
+        if (!currentUserId) {
+            currentUserId = 'user-' + Math.random().toString(36).substring(2, 9);
+            localStorage.setItem('ledger_uid', currentUserId);
+        }
+
         let currentDate = new Date().toISOString().split('T')[0];
-        let dailyData = { dailyNotes: "", target: 22, filters: [false, false, false, false], tasks: { fuel: [], engine: [], legacy: [] } };
-        let globalData = { northStar: "" };
-        let unsubDaily = null;
-        let unsubGlobal = null;
+        let dailyData = JSON.parse(localStorage.getItem(`cache_${currentDate}`)) || { 
+            dailyNotes: "", 
+            target: 22, 
+            filters: [false, false, false, false], 
+            tasks: { fuel: [], engine: [], legacy: [] } 
+        };
+        let globalData = JSON.parse(localStorage.getItem('cache_global')) || { northStar: "" };
 
-        // --- ID PERSISTENCE ---
-        const getOrGenerateID = () => {
-            let id = localStorage.getItem('achievement_ledger_user_id');
-            if (!id) {
-                id = 'user-' + Math.random().toString(36).substring(2, 15);
-                localStorage.setItem('achievement_ledger_user_id', id);
+        // --- 2. CORE SYNC ENGINE ---
+        const updateStatus = (msg, colorClass = 'text-slate-400') => {
+            const el = document.getElementById('syncStatus');
+            if (el) {
+                el.innerText = msg.toUpperCase();
+                el.className = `text-[9px] font-black uppercase tracking-widest ${colorClass}`;
             }
-            return id;
         };
 
-        const updateConnectionUI = (status, id) => {
-            const statusEl = document.getElementById('syncStatus');
-            const idEl = document.getElementById('myIdDisplay');
-            if (statusEl) statusEl.innerText = status;
-            if (idEl) idEl.innerText = id;
-        };
-
-        // --- CORE LOGIC ---
-        const calculateScore = () => {
-            let score = 0;
-            const pts = { legacy: 5, engine: 3, fuel: 1 };
-            Object.keys(pts).forEach(cat => {
-                (dailyData.tasks[cat] || []).forEach(t => { if (t.completed) score += pts[cat]; });
-            });
-            (dailyData.filters || []).forEach(f => { if (f) score += 2; });
-            return score;
-        };
-
-        const render = () => {
-            const score = calculateScore();
-            const target = dailyData.target || 22;
-            const percent = Math.min(Math.round((score / target) * 100), 100);
-
-            document.getElementById('dailyScoreDisplay').innerText = score;
-            document.getElementById('percentText').innerText = percent + '%';
-            document.getElementById('datePicker').value = currentDate;
-            document.getElementById('northStar').value = globalData.northStar || "";
-            document.getElementById('dailyNotes').value = dailyData.dailyNotes || "";
-
-            // Progress Ring
-            const circle = document.getElementById('progressCircle');
-            const circumference = 22 * 2 * Math.PI;
-            circle.style.strokeDashoffset = circumference - (percent / 100) * circumference;
-
-            // Checkboxes
-            for(let i=0; i<4; i++) {
-                const el = document.getElementById('filter' + (i+1));
-                if (el) el.checked = !!dailyData.filters[i];
-            }
-
-            // Task Lists
-            ['legacy', 'engine', 'fuel'].forEach(cat => {
-                const container = document.getElementById(cat + 'Tasks');
-                container.innerHTML = '';
-                (dailyData.tasks[cat] || []).forEach(task => {
-                    const div = document.createElement('div');
-                    div.className = `flex items-center justify-between p-3 rounded-xl border border-slate-100 bg-white transition-all ${task.priority ? 'border-l-4 border-l-amber-400' : ''}`;
-                    div.innerHTML = `
-                        <div class="flex items-center gap-3 flex-1">
-                            <button class="w-6 h-6 rounded-lg border-2 flex items-center justify-center transition-all ${task.completed ? 'bg-emerald-500 border-emerald-500 text-white' : 'border-slate-200 bg-slate-50'}">
-                                ${task.completed ? '<i class="fa-solid fa-check text-[10px]"></i>' : ''}
-                            </button>
-                            <span class="text-sm font-semibold text-slate-700 ${task.completed ? 'line-through opacity-40' : ''}">${task.text}</span>
-                        </div>
-                        <div class="flex gap-1">
-                            <button class="p-2 ${task.priority ? 'text-amber-500' : 'text-slate-300'}" onclick="window.togglePriority('${cat}', ${task.id})"><i class="fa-solid fa-star text-[10px]"></i></button>
-                            <button class="p-2 text-slate-300 hover:text-red-500" onclick="window.removeTask('${cat}', ${task.id})"><i class="fa-solid fa-trash text-[10px]"></i></button>
-                        </div>
-                    `;
-                    div.querySelector('button').onclick = () => {
-                        task.completed = !task.completed;
-                        saveAndRender();
-                    };
-                    container.appendChild(div);
-                });
-            });
-        };
-
-        const saveAndRender = async () => {
-            render();
-            const uid = getOrGenerateID();
-            updateConnectionUI("Syncing...", uid);
+        const saveToCloud = async () => {
+            if (!auth.currentUser) return;
+            updateStatus('Syncing...', 'text-amber-500');
+            
             try {
-                await setDoc(doc(db, 'artifacts', appId, 'users', uid, 'days', currentDate), dailyData);
-                await setDoc(doc(db, 'artifacts', appId, 'users', uid, 'settings', 'global'), globalData);
-                updateConnectionUI("Synced", uid);
+                // Save Daily
+                await setDoc(doc(db, 'artifacts', appId, 'users', currentUserId, 'days', currentDate), dailyData);
+                // Save Global
+                await setDoc(doc(db, 'artifacts', appId, 'users', currentUserId, 'settings', 'global'), globalData);
+                
+                localStorage.setItem(`cache_${currentDate}`, JSON.stringify(dailyData));
+                localStorage.setItem('cache_global', JSON.stringify(globalData));
+                updateStatus('Live', 'text-emerald-500');
             } catch (e) {
-                updateConnectionUI("Offline", uid);
+                updateStatus('Saved Locally', 'text-slate-400');
             }
         };
 
-        const startSync = (uid) => {
-            if (unsubDaily) unsubDaily();
-            if (unsubGlobal) unsubGlobal();
-
-            unsubDaily = onSnapshot(doc(db, 'artifacts', appId, 'users', uid, 'days', currentDate), (snap) => {
-                if (snap.exists()) {
+        const initListeners = (uid) => {
+            // Listen for Cloud Changes (Updates this device if other device changes data)
+            onSnapshot(doc(db, 'artifacts', appId, 'users', uid, 'days', currentDate), (snap) => {
+                if (snap.exists() && JSON.stringify(snap.data()) !== JSON.stringify(dailyData)) {
                     dailyData = snap.data();
                     render();
-                } else {
-                    dailyData = { dailyNotes: "", target: 22, filters: [false, false, false, false], tasks: { fuel: [], engine: [], legacy: [] } };
-                    render();
                 }
-            });
+            }, (err) => console.error("Daily fail", err));
 
-            unsubGlobal = onSnapshot(doc(db, 'artifacts', appId, 'users', uid, 'settings', 'global'), (snap) => {
-                if (snap.exists()) {
+            onSnapshot(doc(db, 'artifacts', appId, 'users', uid, 'settings', 'global'), (snap) => {
+                if (snap.exists() && JSON.stringify(snap.data()) !== JSON.stringify(globalData)) {
                     globalData = snap.data();
                     render();
                 }
-            });
+            }, (err) => console.error("Global fail", err));
         };
 
-        // --- EXPOSED ACTIONS ---
+        // --- 3. UI RENDERING ---
+        const render = () => {
+            document.getElementById('displayId').innerText = currentUserId;
+            document.getElementById('northStar').value = globalData.northStar || "";
+            document.getElementById('dailyNotes').value = dailyData.dailyNotes || "";
+            document.getElementById('dateDisplay').innerText = new Date(currentDate).toLocaleDateString();
+
+            // Checkboxes
+            dailyData.filters.forEach((f, i) => {
+                const el = document.getElementById(`filter${i}`);
+                if (el) el.checked = f;
+            });
+
+            // Score Logic
+            let score = 0;
+            const pts = { legacy: 5, engine: 3, fuel: 1 };
+            ['legacy', 'engine', 'fuel'].forEach(cat => {
+                const container = document.getElementById(`${cat}Tasks`);
+                container.innerHTML = '';
+                (dailyData.tasks[cat] || []).forEach(task => {
+                    if (task.completed) score += pts[cat];
+                    const div = document.createElement('div');
+                    div.className = `flex items-center gap-3 p-3 bg-white border border-slate-100 rounded-xl shadow-sm mb-2`;
+                    div.innerHTML = `
+                        <button onclick="window.toggleTask('${cat}', ${task.id})" class="w-5 h-5 rounded border-2 flex items-center justify-center ${task.completed ? 'bg-emerald-500 border-emerald-500 text-white' : 'border-slate-200'}">
+                            ${task.completed ? '<i class="fa-solid fa-check text-[10px]"></i>' : ''}
+                        </button>
+                        <span class="text-sm font-bold text-slate-700 flex-1 ${task.completed ? 'line-through opacity-40' : ''}">${task.text}</span>
+                        <button onclick="window.removeTask('${cat}', ${task.id})" class="text-slate-300 hover:text-red-500"><i class="fa-solid fa-trash-can text-xs"></i></button>
+                    `;
+                    container.appendChild(div);
+                });
+            });
+            dailyData.filters.forEach(f => { if(f) score += 2; });
+            
+            document.getElementById('scoreText').innerText = score;
+            const progress = Math.min((score / 22) * 100, 100);
+            document.getElementById('progressRing').style.strokeDashoffset = 138 - (138 * (progress / 100));
+        };
+
+        // --- 4. GLOBAL ACTIONS ---
+        window.toggleTask = (cat, id) => {
+            const task = dailyData.tasks[cat].find(t => t.id === id);
+            if (task) task.completed = !task.completed;
+            render();
+            saveToCloud();
+        };
+
         window.addTask = (cat) => {
-            const input = document.getElementById(cat + 'Input');
+            const input = document.getElementById(`${cat}Input`);
             if (!input.value.trim()) return;
-            if (!dailyData.tasks[cat]) dailyData.tasks[cat] = [];
-            dailyData.tasks[cat].push({ id: Date.now(), text: input.value, completed: false, priority: false });
+            dailyData.tasks[cat].push({ id: Date.now(), text: input.value, completed: false });
             input.value = '';
-            saveAndRender();
+            render();
+            saveToCloud();
         };
 
         window.removeTask = (cat, id) => {
             dailyData.tasks[cat] = dailyData.tasks[cat].filter(t => t.id !== id);
-            saveAndRender();
+            render();
+            saveToCloud();
         };
 
-        window.togglePriority = (cat, id) => {
-            const t = dailyData.tasks[cat].find(x => x.id === id);
-            if (t) t.priority = !t.priority;
-            saveAndRender();
-        };
-
-        window.updateFilter = (idx, val) => {
-            dailyData.filters[idx] = val;
-            saveAndRender();
-        };
-
-        window.changeDate = (offset) => {
-            const d = new Date(currentDate);
-            d.setDate(d.getDate() + offset);
-            currentDate = d.toISOString().split('T')[0];
-            startSync(getOrGenerateID());
+        window.updateFilter = (idx, checked) => {
+            dailyData.filters[idx] = checked;
+            render();
+            saveToCloud();
         };
 
         window.manualSync = () => {
-            const id = prompt("Enter Device ID to Link:");
-            if (id && id.trim()) {
-                localStorage.setItem('achievement_ledger_user_id', id.trim());
+            const newId = prompt("Enter Device ID to Link:", currentUserId);
+            if (newId && newId !== currentUserId) {
+                localStorage.setItem('ledger_uid', newId.trim());
                 window.location.reload();
             }
         };
 
-        window.resetDevice = () => {
-            if(confirm("Generate new ID? This will unlink current view.")) {
-                localStorage.removeItem('achievement_ledger_user_id');
+        window.resetId = () => {
+            if (confirm("Reset Device ID? You will lose access to this specific cloud log unless you have the ID saved.")) {
+                localStorage.removeItem('ledger_uid');
                 window.location.reload();
             }
         };
 
-        // --- INIT ---
+        // --- 5. STARTUP ---
         window.onload = async () => {
-            updateConnectionUI("Connecting...", "...");
+            render(); // Render immediately from local cache
+            updateStatus('Connecting...', 'text-blue-500');
+
             try {
                 if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
                     await signInWithCustomToken(auth, __initial_auth_token);
                 } else {
                     await signInAnonymously(auth);
                 }
-
-                onAuthStateChanged(auth, (u) => {
-                    if (u) {
-                        const uid = getOrGenerateID();
-                        updateConnectionUI("Connected", uid);
-                        startSync(uid);
+                
+                onAuthStateChanged(auth, (user) => {
+                    if (user) {
+                        updateStatus('Live', 'text-emerald-500');
+                        initListeners(currentUserId);
+                        saveToCloud(); // Push any offline changes
                     }
                 });
             } catch (e) {
-                updateConnectionUI("Error Connecting", "Check Internet");
+                updateStatus('Offline Mode', 'text-slate-400');
             }
+
+            // Input Listeners
+            document.getElementById('northStar').oninput = (e) => { globalData.northStar = e.target.value; saveToCloud(); };
+            document.getElementById('dailyNotes').oninput = (e) => { dailyData.dailyNotes = e.target.value; saveToCloud(); };
         };
-
-        // Textarea listeners
-        document.getElementById('northStar').oninput = (e) => { globalData.northStar = e.target.value; saveAndRender(); };
-        document.getElementById('dailyNotes').oninput = (e) => { dailyData.dailyNotes = e.target.value; saveAndRender(); };
-
     </script>
 
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;600;700;800&display=swap');
-        body { font-family: 'Plus Jakarta Sans', sans-serif; background-color: #f8fafc; }
-        .glass { background: white; border-radius: 1.5rem; border: 1px solid #e2e8f0; }
-        .ring-circle { transition: stroke-dashoffset 0.5s ease; transform: rotate(-90deg); transform-origin: 50% 50%; }
+        body { font-family: 'Plus Jakarta Sans', sans-serif; background-color: #F4F7FA; color: #1E293B; }
+        .glass { background: rgba(255, 255, 255, 0.9); backdrop-filter: blur(10px); border: 1px solid rgba(226, 232, 240, 0.8); border-radius: 1.5rem; }
+        .ring-path { transition: stroke-dashoffset 0.6s cubic-bezier(0.4, 0, 0.2, 1); transform: rotate(-90deg); transform-origin: center; }
     </style>
 </head>
 <body class="p-4 md:p-8 pb-32">
 
     <div class="max-w-6xl mx-auto">
         <!-- HEADER -->
-        <div class="flex flex-col md:flex-row justify-between items-start md:items-center gap-6 mb-10">
+        <header class="flex flex-col md:flex-row justify-between items-start md:items-center gap-6 mb-10">
             <div>
-                <h1 class="text-3xl font-black text-slate-900 tracking-tight">Achievement Ledger</h1>
-                <p class="text-[10px] font-bold text-indigo-500 uppercase tracking-widest mt-1">Consultant ⮕ Home Impact Developer</p>
+                <h1 class="text-3xl font-extrabold tracking-tight">Achievement Ledger</h1>
+                <p class="text-[10px] font-bold text-indigo-600 uppercase tracking-[0.2em] mt-1">Consultant ⮕ Home Impact Developer</p>
             </div>
 
-            <div class="flex items-center gap-3">
-                <!-- Date -->
-                <div class="glass p-2 flex items-center gap-4 px-4 shadow-sm">
-                    <button onclick="changeDate(-1)" class="text-slate-400 hover:text-slate-900"><i class="fa-solid fa-chevron-left"></i></button>
-                    <input type="date" id="datePicker" onchange="currentDate=this.value; startSync(getOrGenerateID())" class="font-bold text-slate-700 outline-none cursor-pointer">
-                    <button onclick="changeDate(1)" class="text-slate-400 hover:text-slate-900"><i class="fa-solid fa-chevron-right"></i></button>
-                </div>
-                <!-- Score -->
-                <div class="glass p-3 px-5 flex items-center gap-4 shadow-sm">
+            <div class="flex items-center gap-4">
+                <div class="glass px-6 py-3 flex items-center gap-4 shadow-sm">
+                    <span id="dateDisplay" class="font-bold text-slate-600 text-sm">Loading...</span>
+                    <div class="h-8 w-[1px] bg-slate-200"></div>
                     <div class="relative flex items-center justify-center">
-                        <svg width="48" height="48">
-                            <circle class="text-slate-100" stroke-width="4" stroke="currentColor" fill="transparent" r="22" cx="24" cy="24"/>
-                            <circle id="progressCircle" class="ring-circle text-emerald-500" stroke-width="4" stroke-dasharray="138.23" stroke-dashoffset="138.23" stroke-linecap="round" stroke="currentColor" fill="transparent" r="22" cx="24" cy="24"/>
+                        <svg width="44" height="44" viewBox="0 0 50 50">
+                            <circle cx="25" cy="25" r="22" fill="none" stroke="#E2E8F0" stroke-width="4" />
+                            <circle id="progressRing" cx="25" cy="25" r="22" fill="none" stroke="#10B981" stroke-width="4" stroke-dasharray="138" stroke-dashoffset="138" stroke-linecap="round" class="ring-path" />
                         </svg>
-                        <span id="percentText" class="absolute text-[10px] font-black">0%</span>
+                        <span id="scoreText" class="absolute font-black text-xs">0</span>
                     </div>
-                    <div>
-                        <p class="text-[9px] font-black text-slate-400 uppercase tracking-tighter">Yield</p>
-                        <div class="flex items-baseline gap-1">
-                            <span id="dailyScoreDisplay" class="text-2xl font-black text-slate-900 leading-none">0</span>
-                            <span class="text-slate-300 font-bold">/</span>
-                            <span class="text-slate-400 font-bold">22</span>
-                        </div>
-                    </div>
+                    <span class="text-[10px] font-black text-slate-300 uppercase">/ 22 Target</span>
                 </div>
             </div>
-        </div>
+        </header>
 
-        <div class="grid grid-cols-1 lg:grid-cols-12 gap-8">
-            <!-- STRATEGY COLUMN -->
+        <main class="grid grid-cols-1 lg:grid-cols-12 gap-8">
+            
+            <!-- LEFT: VISION & LOG -->
             <div class="lg:col-span-7 space-y-6">
                 <!-- North Star -->
-                <div class="glass p-6 border-l-[10px] border-emerald-500 shadow-sm">
-                    <div class="flex items-center gap-2 mb-4">
-                        <i class="fa-solid fa-compass text-emerald-500"></i>
-                        <h2 class="text-[10px] font-black uppercase tracking-widest text-slate-500">The North Star</h2>
+                <div class="glass p-6 border-l-8 border-emerald-500 shadow-md">
+                    <div class="flex items-center gap-2 mb-3 text-emerald-600">
+                        <i class="fa-solid fa-compass"></i>
+                        <h2 class="text-[10px] font-black uppercase tracking-widest">The North Star</h2>
                     </div>
-                    <textarea id="northStar" class="w-full h-20 text-lg font-bold text-slate-700 bg-transparent outline-none resize-none placeholder:text-slate-200" placeholder="Your ultimate vision..."></textarea>
+                    <textarea id="northStar" class="w-full bg-transparent text-lg font-bold text-slate-800 outline-none resize-none h-20 placeholder:text-slate-200" placeholder="Your long-term objective..."></textarea>
                 </div>
 
-                <!-- Filters -->
+                <!-- Strategic Filters -->
                 <div class="glass p-6">
-                    <h2 class="text-[10px] font-black uppercase tracking-widest text-slate-500 mb-4">Strategic Filters (+2 pts)</h2>
-                    <div class="grid grid-cols-2 gap-3">
-                        <label class="flex items-center gap-3 p-3 bg-slate-50 rounded-xl border border-slate-100 cursor-pointer">
-                            <input type="checkbox" id="filter1" onchange="updateFilter(0, this.checked)" class="w-4 h-4 accent-emerald-500">
-                            <span class="text-[10px] font-black text-slate-600">CLINICAL IMPACT</span>
+                    <h2 class="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-4">Strategic Multipliers (+2 pts ea)</h2>
+                    <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
+                        <label class="flex flex-col items-center justify-center p-3 rounded-2xl bg-slate-50 border border-slate-100 cursor-pointer hover:bg-slate-100 transition-all">
+                            <input type="checkbox" id="filter0" onchange="updateFilter(0, this.checked)" class="mb-2 w-4 h-4 accent-emerald-500">
+                            <span class="text-[8px] font-black text-center leading-tight">CLINICAL<br>IMPACT</span>
                         </label>
-                        <label class="flex items-center gap-3 p-3 bg-slate-50 rounded-xl border border-slate-100 cursor-pointer">
-                            <input type="checkbox" id="filter2" onchange="updateFilter(1, this.checked)" class="w-4 h-4 accent-emerald-500">
-                            <span class="text-[10px] font-black text-slate-600">LEVERAGE RATIO</span>
+                        <label class="flex flex-col items-center justify-center p-3 rounded-2xl bg-slate-50 border border-slate-100 cursor-pointer hover:bg-slate-100 transition-all">
+                            <input type="checkbox" id="filter1" onchange="updateFilter(1, this.checked)" class="mb-2 w-4 h-4 accent-emerald-500">
+                            <span class="text-[8px] font-black text-center leading-tight">LEVERAGE<br>RATIO</span>
                         </label>
-                        <label class="flex items-center gap-3 p-3 bg-slate-50 rounded-xl border border-slate-100 cursor-pointer">
-                            <input type="checkbox" id="filter3" onchange="updateFilter(2, this.checked)" class="w-4 h-4 accent-emerald-500">
-                            <span class="text-[10px] font-black text-slate-600">SCALABILITY</span>
+                        <label class="flex flex-col items-center justify-center p-3 rounded-2xl bg-slate-50 border border-slate-100 cursor-pointer hover:bg-slate-100 transition-all">
+                            <input type="checkbox" id="filter2" onchange="updateFilter(2, this.checked)" class="mb-2 w-4 h-4 accent-emerald-500">
+                            <span class="text-[8px] font-black text-center leading-tight">SCALABLE<br>MODEL</span>
                         </label>
-                        <label class="flex items-center gap-3 p-3 bg-slate-50 rounded-xl border border-slate-100 cursor-pointer">
-                            <input type="checkbox" id="filter4" onchange="updateFilter(3, this.checked)" class="w-4 h-4 accent-emerald-500">
-                            <span class="text-[10px] font-black text-slate-600">ASSET EQUITY</span>
+                        <label class="flex flex-col items-center justify-center p-3 rounded-2xl bg-slate-50 border border-slate-100 cursor-pointer hover:bg-slate-100 transition-all">
+                            <input type="checkbox" id="filter3" onchange="updateFilter(3, this.checked)" class="mb-2 w-4 h-4 accent-emerald-500">
+                            <span class="text-[8px] font-black text-center leading-tight">ASSET<br>EQUITY</span>
                         </label>
                     </div>
                 </div>
 
-                <!-- Log -->
-                <div class="bg-slate-900 rounded-3xl p-6 shadow-xl">
-                    <div class="flex justify-between items-center mb-4">
-                        <div class="flex items-center gap-2 text-white">
-                            <i class="fa-solid fa-rocket text-indigo-400 text-sm"></i>
-                            <h2 class="text-[10px] font-black uppercase tracking-widest text-slate-400">Log</h2>
+                <!-- Daily Log -->
+                <div class="bg-[#0F172A] rounded-[2rem] p-8 shadow-2xl overflow-hidden relative">
+                    <div class="flex justify-between items-center mb-6">
+                        <div class="flex items-center gap-3">
+                            <div class="w-8 h-8 rounded-lg bg-indigo-500/20 flex items-center justify-center text-indigo-400">
+                                <i class="fa-solid fa-feather-pointed"></i>
+                            </div>
+                            <h2 class="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400">Daily Ledger Log</h2>
                         </div>
-                        <span id="syncStatus" class="text-[9px] font-black text-indigo-400 uppercase tracking-widest">Waiting...</span>
+                        <div id="syncStatus" class="text-[9px] font-black text-slate-500 uppercase tracking-widest">Standby</div>
                     </div>
-                    <textarea id="dailyNotes" class="w-full h-64 bg-slate-800/50 rounded-2xl p-4 text-slate-300 border border-slate-700 outline-none focus:border-indigo-500 transition-all resize-none leading-relaxed" placeholder="Insights, breakthroughs, or blockers..."></textarea>
+                    <textarea id="dailyNotes" class="w-full h-72 bg-[#1E293B]/40 rounded-2xl p-6 text-slate-300 text-sm leading-relaxed outline-none border border-slate-800 focus:border-indigo-500/50 transition-all resize-none placeholder:text-slate-700" placeholder="Breakthroughs, conversations, or logic chains..."></textarea>
                 </div>
             </div>
 
-            <!-- TIERS COLUMN -->
+            <!-- RIGHT: ACTION TIERS -->
             <div class="lg:col-span-5 space-y-4">
-                <!-- Legacy -->
+                
+                <!-- TIER 3 -->
                 <div class="glass p-5 border-t-4 border-emerald-500">
                     <div class="flex justify-between items-center mb-4">
-                        <h3 class="text-[10px] font-black uppercase text-slate-400">Legacy (+5)</h3>
-                        <i class="fa-solid fa-crown text-emerald-500"></i>
+                        <h3 class="text-[10px] font-black uppercase text-slate-400">Tier 3: Legacy (+5)</h3>
+                        <span class="px-2 py-1 bg-emerald-50 text-emerald-600 text-[8px] font-black rounded-md">HIGH IMPACT</span>
                     </div>
-                    <div id="legacyTasks" class="space-y-2 mb-3"></div>
-                    <div class="flex gap-2">
-                        <input type="text" id="legacyInput" onkeydown="if(event.key==='Enter') addTask('legacy')" class="flex-1 bg-slate-50 p-3 rounded-xl text-xs font-bold outline-none border border-slate-100" placeholder="Add milestone...">
-                        <button onclick="addTask('legacy')" class="w-10 h-10 bg-emerald-500 text-white rounded-xl shadow-lg shadow-emerald-500/20"><i class="fa-solid fa-plus text-xs"></i></button>
+                    <div id="legacyTasks" class="min-h-[40px]"></div>
+                    <div class="mt-4 flex gap-2">
+                        <input id="legacyInput" onkeydown="if(event.key==='Enter') addTask('legacy')" type="text" class="flex-1 bg-slate-50 rounded-xl px-4 text-xs font-bold outline-none border border-slate-100" placeholder="New legacy task...">
+                        <button onclick="addTask('legacy')" class="w-10 h-10 bg-emerald-500 text-white rounded-xl shadow-lg shadow-emerald-500/20"><i class="fa-solid fa-plus"></i></button>
                     </div>
                 </div>
 
-                <!-- Engine -->
+                <!-- TIER 2 -->
                 <div class="glass p-5 border-t-4 border-indigo-500">
                     <div class="flex justify-between items-center mb-4">
-                        <h3 class="text-[10px] font-black uppercase text-slate-400">Engine (+3)</h3>
-                        <i class="fa-solid fa-gears text-indigo-500"></i>
+                        <h3 class="text-[10px] font-black uppercase text-slate-400">Tier 2: Engine (+3)</h3>
                     </div>
-                    <div id="engineTasks" class="space-y-2 mb-3"></div>
-                    <div class="flex gap-2">
-                        <input type="text" id="engineInput" onkeydown="if(event.key==='Enter') addTask('engine')" class="flex-1 bg-slate-50 p-3 rounded-xl text-xs font-bold outline-none border border-slate-100" placeholder="Add operation...">
-                        <button onclick="addTask('engine')" class="w-10 h-10 bg-indigo-500 text-white rounded-xl shadow-lg shadow-indigo-500/20"><i class="fa-solid fa-plus text-xs"></i></button>
+                    <div id="engineTasks" class="min-h-[40px]"></div>
+                    <div class="mt-4 flex gap-2">
+                        <input id="engineInput" onkeydown="if(event.key==='Enter') addTask('engine')" type="text" class="flex-1 bg-slate-50 rounded-xl px-4 text-xs font-bold outline-none border border-slate-100" placeholder="Operational task...">
+                        <button onclick="addTask('engine')" class="w-10 h-10 bg-indigo-500 text-white rounded-xl shadow-lg shadow-indigo-500/20"><i class="fa-solid fa-plus"></i></button>
                     </div>
                 </div>
 
-                <!-- Fuel -->
+                <!-- TIER 1 -->
                 <div class="glass p-5 border-t-4 border-blue-500">
                     <div class="flex justify-between items-center mb-4">
-                        <h3 class="text-[10px] font-black uppercase text-slate-400">Fuel (+1)</h3>
-                        <i class="fa-solid fa-bolt text-blue-500"></i>
+                        <h3 class="text-[10px] font-black uppercase text-slate-400">Tier 1: Fuel (+1)</h3>
                     </div>
-                    <div id="fuelTasks" class="space-y-2 mb-3"></div>
-                    <div class="flex gap-2">
-                        <input type="text" id="fuelInput" onkeydown="if(event.key==='Enter') addTask('fuel')" class="flex-1 bg-slate-50 p-3 rounded-xl text-xs font-bold outline-none border border-slate-100" placeholder="Add quick win...">
-                        <button onclick="addTask('fuel')" class="w-10 h-10 bg-blue-500 text-white rounded-xl shadow-lg shadow-blue-500/20"><i class="fa-solid fa-plus text-xs"></i></button>
+                    <div id="fuelTasks" class="min-h-[40px]"></div>
+                    <div class="mt-4 flex gap-2">
+                        <input id="fuelInput" onkeydown="if(event.key==='Enter') addTask('fuel')" type="text" class="flex-1 bg-slate-50 rounded-xl px-4 text-xs font-bold outline-none border border-slate-100" placeholder="Quick win...">
+                        <button onclick="addTask('fuel')" class="w-10 h-10 bg-blue-500 text-white rounded-xl shadow-lg shadow-blue-500/20"><i class="fa-solid fa-plus"></i></button>
                     </div>
                 </div>
             </div>
-        </div>
+        </main>
     </div>
 
-    <!-- FOOTER NAV / SYNC -->
-    <div class="fixed bottom-0 left-0 w-full bg-white border-t border-slate-200 p-4 shadow-2xl z-50">
-        <div class="max-w-6xl mx-auto flex flex-wrap justify-between items-center gap-4">
-            <div class="flex items-center gap-3">
-                <div class="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></div>
-                <div class="bg-slate-100 px-3 py-1.5 rounded-lg text-[10px] font-mono font-bold text-slate-600">
-                    ID: <span id="myIdDisplay" class="text-indigo-600 select-all">...</span>
+    <!-- PERSISTENT FOOTER FOR SYNC -->
+    <footer class="fixed bottom-0 left-0 w-full bg-white/80 backdrop-blur-md border-t border-slate-200 p-4 z-50">
+        <div class="max-w-6xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-4">
+            <div class="flex items-center gap-4">
+                <div class="flex items-center gap-2">
+                    <div class="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></div>
+                    <span class="text-[10px] font-black uppercase text-slate-400 tracking-widest">Device ID</span>
                 </div>
-                <button onclick="resetDevice()" class="text-[10px] font-black uppercase text-red-400 hover:text-red-600 transition-colors">Reset</button>
+                <div class="bg-slate-900 text-indigo-400 px-4 py-2 rounded-full text-[11px] font-mono font-bold shadow-inner">
+                    <span id="displayId">INITIALIZING...</span>
+                </div>
+                <button onclick="resetId()" class="text-[10px] font-black uppercase text-red-400 hover:text-red-600 transition-colors">Reset</button>
             </div>
-            
-            <button onclick="manualSync()" class="bg-indigo-600 text-white px-6 py-2.5 rounded-xl text-[10px] font-black uppercase tracking-widest shadow-xl shadow-indigo-200 hover:scale-105 active:scale-95 transition-all">
-                Link Another Device
-            </button>
+
+            <div class="flex items-center gap-3">
+                <p class="hidden md:block text-[9px] font-black text-slate-400 uppercase tracking-widest">Continuous Sync Enabled</p>
+                <button onclick="manualSync()" class="bg-indigo-600 text-white px-6 py-2.5 rounded-full text-[10px] font-black uppercase tracking-widest shadow-xl shadow-indigo-200 hover:scale-[1.02] active:scale-[0.98] transition-all">
+                    Link Mobile / Desktop
+                </button>
+            </div>
         </div>
-    </div>
+    </footer>
 
 </body>
 </html>
