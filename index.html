@@ -10,186 +10,188 @@
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
         import { getAuth, onAuthStateChanged, signInAnonymously, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        import { getFirestore, doc, setDoc, onSnapshot, getDoc, enableIndexedDbPersistence } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { getFirestore, doc, setDoc, onSnapshot, getDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
-        // --- 1. INITIALIZATION & IMMEDIATE ID ---
         const firebaseConfig = JSON.parse(__firebase_config);
-        const appId = typeof __app_id !== 'undefined' ? __app_id : 'ledger-v4-prod';
         const app = initializeApp(firebaseConfig);
         const auth = getAuth(app);
         const db = getFirestore(app);
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'ledger-v4';
 
-        // Get ID immediately from storage or create it
-        let currentUserId = localStorage.getItem('ledger_uid');
-        if (!currentUserId) {
-            currentUserId = 'user-' + Math.random().toString(36).substring(2, 9);
-            localStorage.setItem('ledger_uid', currentUserId);
-        }
-
+        // State
+        let user = null;
         let currentDate = new Date().toISOString().split('T')[0];
-        let dailyData = JSON.parse(localStorage.getItem(`cache_${currentDate}`)) || { 
-            dailyNotes: "", 
-            target: 22, 
-            filters: [false, false, false, false], 
-            tasks: { fuel: [], engine: [], legacy: [] } 
+        let dailyData = {
+            dailyNotes: "",
+            target: 22,
+            filters: [false, false, false, false],
+            tasks: { legacy: [], engine: [], fuel: [] }
         };
-        let globalData = JSON.parse(localStorage.getItem('cache_global')) || { northStar: "" };
+        let globalData = { northStar: "" };
 
-        // --- 2. CORE SYNC ENGINE ---
-        const updateStatus = (msg, colorClass = 'text-slate-400') => {
-            const el = document.getElementById('syncStatus');
-            if (el) {
-                el.innerText = msg.toUpperCase();
-                el.className = `text-[9px] font-black uppercase tracking-widest ${colorClass}`;
-            }
-        };
-
-        const saveToCloud = async () => {
-            if (!auth.currentUser) return;
-            updateStatus('Syncing...', 'text-amber-500');
-            
-            try {
-                // Save Daily
-                await setDoc(doc(db, 'artifacts', appId, 'users', currentUserId, 'days', currentDate), dailyData);
-                // Save Global
-                await setDoc(doc(db, 'artifacts', appId, 'users', currentUserId, 'settings', 'global'), globalData);
-                
-                localStorage.setItem(`cache_${currentDate}`, JSON.stringify(dailyData));
-                localStorage.setItem('cache_global', JSON.stringify(globalData));
-                updateStatus('Live', 'text-emerald-500');
-            } catch (e) {
-                updateStatus('Saved Locally', 'text-slate-400');
-            }
-        };
-
-        const initListeners = (uid) => {
-            // Listen for Cloud Changes (Updates this device if other device changes data)
-            onSnapshot(doc(db, 'artifacts', appId, 'users', uid, 'days', currentDate), (snap) => {
-                if (snap.exists() && JSON.stringify(snap.data()) !== JSON.stringify(dailyData)) {
-                    dailyData = snap.data();
-                    render();
-                }
-            }, (err) => console.error("Daily fail", err));
-
-            onSnapshot(doc(db, 'artifacts', appId, 'users', uid, 'settings', 'global'), (snap) => {
-                if (snap.exists() && JSON.stringify(snap.data()) !== JSON.stringify(globalData)) {
-                    globalData = snap.data();
-                    render();
-                }
-            }, (err) => console.error("Global fail", err));
-        };
-
-        // --- 3. UI RENDERING ---
-        const render = () => {
-            document.getElementById('displayId').innerText = currentUserId;
-            document.getElementById('northStar').value = globalData.northStar || "";
-            document.getElementById('dailyNotes').value = dailyData.dailyNotes || "";
-            document.getElementById('dateDisplay').innerText = new Date(currentDate).toLocaleDateString();
-
-            // Checkboxes
-            dailyData.filters.forEach((f, i) => {
-                const el = document.getElementById(`filter${i}`);
-                if (el) el.checked = f;
-            });
-
-            // Score Logic
-            let score = 0;
-            const pts = { legacy: 5, engine: 3, fuel: 1 };
-            ['legacy', 'engine', 'fuel'].forEach(cat => {
-                const container = document.getElementById(`${cat}Tasks`);
-                container.innerHTML = '';
-                (dailyData.tasks[cat] || []).forEach(task => {
-                    if (task.completed) score += pts[cat];
-                    const div = document.createElement('div');
-                    div.className = `flex items-center gap-3 p-3 bg-white border border-slate-100 rounded-xl shadow-sm mb-2`;
-                    div.innerHTML = `
-                        <button onclick="window.toggleTask('${cat}', ${task.id})" class="w-5 h-5 rounded border-2 flex items-center justify-center ${task.completed ? 'bg-emerald-500 border-emerald-500 text-white' : 'border-slate-200'}">
-                            ${task.completed ? '<i class="fa-solid fa-check text-[10px]"></i>' : ''}
-                        </button>
-                        <span class="text-sm font-bold text-slate-700 flex-1 ${task.completed ? 'line-through opacity-40' : ''}">${task.text}</span>
-                        <button onclick="window.removeTask('${cat}', ${task.id})" class="text-slate-300 hover:text-red-500"><i class="fa-solid fa-trash-can text-xs"></i></button>
-                    `;
-                    container.appendChild(div);
-                });
-            });
-            dailyData.filters.forEach(f => { if(f) score += 2; });
-            
-            document.getElementById('scoreText').innerText = score;
-            const progress = Math.min((score / 22) * 100, 100);
-            document.getElementById('progressRing').style.strokeDashoffset = 138 - (138 * (progress / 100));
-        };
-
-        // --- 4. GLOBAL ACTIONS ---
-        window.toggleTask = (cat, id) => {
-            const task = dailyData.tasks[cat].find(t => t.id === id);
-            if (task) task.completed = !task.completed;
-            render();
-            saveToCloud();
-        };
-
-        window.addTask = (cat) => {
-            const input = document.getElementById(`${cat}Input`);
-            if (!input.value.trim()) return;
-            dailyData.tasks[cat].push({ id: Date.now(), text: input.value, completed: false });
-            input.value = '';
-            render();
-            saveToCloud();
-        };
-
-        window.removeTask = (cat, id) => {
-            dailyData.tasks[cat] = dailyData.tasks[cat].filter(t => t.id !== id);
-            render();
-            saveToCloud();
-        };
-
-        window.updateFilter = (idx, checked) => {
-            dailyData.filters[idx] = checked;
-            render();
-            saveToCloud();
-        };
-
-        window.manualSync = () => {
-            const newId = prompt("Enter Device ID to Link:", currentUserId);
-            if (newId && newId !== currentUserId) {
-                localStorage.setItem('ledger_uid', newId.trim());
-                window.location.reload();
-            }
-        };
-
-        window.resetId = () => {
-            if (confirm("Reset Device ID? You will lose access to this specific cloud log unless you have the ID saved.")) {
-                localStorage.removeItem('ledger_uid');
-                window.location.reload();
-            }
-        };
-
-        // --- 5. STARTUP ---
-        window.onload = async () => {
-            render(); // Render immediately from local cache
-            updateStatus('Connecting...', 'text-blue-500');
-
+        // --- AUTH & INITIALIZATION ---
+        const initAuth = async () => {
             try {
                 if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
                     await signInWithCustomToken(auth, __initial_auth_token);
                 } else {
                     await signInAnonymously(auth);
                 }
-                
-                onAuthStateChanged(auth, (user) => {
-                    if (user) {
-                        updateStatus('Live', 'text-emerald-500');
-                        initListeners(currentUserId);
-                        saveToCloud(); // Push any offline changes
-                    }
-                });
             } catch (e) {
-                updateStatus('Offline Mode', 'text-slate-400');
+                console.error("Auth error", e);
+                document.getElementById('syncStatus').innerText = "OFFLINE";
             }
-
-            // Input Listeners
-            document.getElementById('northStar').oninput = (e) => { globalData.northStar = e.target.value; saveToCloud(); };
-            document.getElementById('dailyNotes').oninput = (e) => { dailyData.dailyNotes = e.target.value; saveToCloud(); };
         };
+
+        onAuthStateChanged(auth, (u) => {
+            user = u;
+            if (u) {
+                document.getElementById('displayId').innerText = u.uid;
+                setupListeners(u.uid);
+            }
+        });
+
+        // --- DATA LISTENERS ---
+        function setupListeners(uid) {
+            document.getElementById('syncStatus').innerText = "CONNECTING...";
+            
+            // Global Settings
+            onSnapshot(doc(db, 'artifacts', appId, 'users', uid, 'settings', 'global'), (snap) => {
+                if (snap.exists()) {
+                    globalData = snap.data();
+                    render();
+                }
+            });
+
+            // Daily Data
+            onSnapshot(doc(db, 'artifacts', appId, 'users', uid, 'days', currentDate), (snap) => {
+                if (snap.exists()) {
+                    dailyData = snap.data();
+                    if (!dailyData.tasks) dailyData.tasks = { legacy: [], engine: [], fuel: [] };
+                    render();
+                    document.getElementById('syncStatus').innerText = "LIVE";
+                } else {
+                    saveDaily(); // Create initial doc
+                }
+            }, (err) => {
+                document.getElementById('syncStatus').innerText = "SYNC ERROR";
+            });
+        }
+
+        // --- SAVE FUNCTIONS ---
+        async function saveDaily() {
+            if (!user) return;
+            await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'days', currentDate), dailyData);
+        }
+
+        async function saveGlobal() {
+            if (!user) return;
+            await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'global'), globalData);
+        }
+
+        // --- UI ACTIONS ---
+        window.addTask = (tier) => {
+            const input = document.getElementById(`${tier}Input`);
+            const val = input.value.trim();
+            if (!val) return;
+
+            if (!dailyData.tasks[tier]) dailyData.tasks[tier] = [];
+            dailyData.tasks[tier].push({
+                id: Date.now(),
+                text: val,
+                completed: false
+            });
+
+            input.value = "";
+            render();
+            saveDaily();
+        };
+
+        window.toggleTask = (tier, id) => {
+            const task = dailyData.tasks[tier].find(t => t.id === id);
+            if (task) {
+                task.completed = !task.completed;
+                render();
+                saveDaily();
+            }
+        };
+
+        window.deleteTask = (tier, id) => {
+            dailyData.tasks[tier] = dailyData.tasks[tier].filter(t => t.id !== id);
+            render();
+            saveDaily();
+        };
+
+        window.updateFilter = (idx, checked) => {
+            dailyData.filters[idx] = checked;
+            render();
+            saveDaily();
+        };
+
+        window.updateNotes = (val) => {
+            dailyData.dailyNotes = val;
+            saveDaily();
+        };
+
+        window.updateNorthStar = (val) => {
+            globalData.northStar = val;
+            saveGlobal();
+        };
+
+        // --- RENDER LOGIC ---
+        function render() {
+            // Update Text Areas
+            document.getElementById('northStar').value = globalData.northStar || "";
+            document.getElementById('dailyNotes').value = dailyData.dailyNotes || "";
+            document.getElementById('dateDisplay').innerText = new Date(currentDate).toLocaleDateString();
+
+            // Update Checkboxes
+            dailyData.filters.forEach((val, i) => {
+                document.getElementById(`filter${i}`).checked = !!val;
+            });
+
+            // Calculate Score
+            let totalScore = 0;
+            const scoring = { legacy: 5, engine: 3, fuel: 1 };
+            
+            ['legacy', 'engine', 'fuel'].forEach(tier => {
+                const container = document.getElementById(`${tier}Tasks`);
+                container.innerHTML = "";
+                
+                (dailyData.tasks[tier] || []).forEach(task => {
+                    if (task.completed) totalScore += scoring[tier];
+                    
+                    const div = document.createElement('div');
+                    div.className = `flex items-center gap-3 p-3 bg-white border border-slate-100 rounded-xl shadow-sm mb-2`;
+                    div.innerHTML = `
+                        <button onclick="window.toggleTask('${tier}', ${task.id})" class="w-5 h-5 rounded border-2 flex items-center justify-center transition-all ${task.completed ? 'bg-emerald-500 border-emerald-500 text-white' : 'border-slate-200'}">
+                            ${task.completed ? '<i class="fa-solid fa-check text-[10px]"></i>' : ''}
+                        </button>
+                        <span class="text-sm font-bold text-slate-700 flex-1 ${task.completed ? 'line-through opacity-40' : ''}">${task.text}</span>
+                        <button onclick="window.deleteTask('${tier}', ${task.id})" class="text-slate-300 hover:text-red-500 transition-colors"><i class="fa-solid fa-trash-can text-xs"></i></button>
+                    `;
+                    container.appendChild(div);
+                });
+            });
+
+            // Add multipliers
+            dailyData.filters.forEach(f => { if(f) totalScore += 2; });
+
+            document.getElementById('scoreText').innerText = totalScore;
+            const progress = Math.min((totalScore / 22) * 100, 100);
+            document.getElementById('progressRing').style.strokeDashoffset = 138 - (138 * (progress / 100));
+        }
+
+        window.manualSync = () => {
+            const id = prompt("Enter Device ID to Link:");
+            if (id && id.trim()) {
+                // In a real environment, we'd handle custom token logic, 
+                // but for this UI we'll reload and prompt for login or use storage logic.
+                alert("To link devices, use the same account or contact support for ID transfer.");
+            }
+        };
+
+        window.onload = initAuth;
     </script>
 
     <style>
@@ -211,7 +213,7 @@
 
             <div class="flex items-center gap-4">
                 <div class="glass px-6 py-3 flex items-center gap-4 shadow-sm">
-                    <span id="dateDisplay" class="font-bold text-slate-600 text-sm">Loading...</span>
+                    <span id="dateDisplay" class="font-bold text-slate-600 text-sm">...</span>
                     <div class="h-8 w-[1px] bg-slate-200"></div>
                     <div class="relative flex items-center justify-center">
                         <svg width="44" height="44" viewBox="0 0 50 50">
@@ -226,8 +228,7 @@
         </header>
 
         <main class="grid grid-cols-1 lg:grid-cols-12 gap-8">
-            
-            <!-- LEFT: VISION & LOG -->
+            <!-- LEFT -->
             <div class="lg:col-span-7 space-y-6">
                 <!-- North Star -->
                 <div class="glass p-6 border-l-8 border-emerald-500 shadow-md">
@@ -235,7 +236,7 @@
                         <i class="fa-solid fa-compass"></i>
                         <h2 class="text-[10px] font-black uppercase tracking-widest">The North Star</h2>
                     </div>
-                    <textarea id="northStar" class="w-full bg-transparent text-lg font-bold text-slate-800 outline-none resize-none h-20 placeholder:text-slate-200" placeholder="Your long-term objective..."></textarea>
+                    <textarea id="northStar" oninput="updateNorthStar(this.value)" class="w-full bg-transparent text-lg font-bold text-slate-800 outline-none resize-none h-20 placeholder:text-slate-200" placeholder="Your long-term objective..."></textarea>
                 </div>
 
                 <!-- Strategic Filters -->
@@ -270,22 +271,21 @@
                             </div>
                             <h2 class="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400">Daily Ledger Log</h2>
                         </div>
-                        <div id="syncStatus" class="text-[9px] font-black text-slate-500 uppercase tracking-widest">Standby</div>
+                        <div id="syncStatus" class="text-[9px] font-black text-slate-500 uppercase tracking-widest">CONNECTING...</div>
                     </div>
-                    <textarea id="dailyNotes" class="w-full h-72 bg-[#1E293B]/40 rounded-2xl p-6 text-slate-300 text-sm leading-relaxed outline-none border border-slate-800 focus:border-indigo-500/50 transition-all resize-none placeholder:text-slate-700" placeholder="Breakthroughs, conversations, or logic chains..."></textarea>
+                    <textarea id="dailyNotes" oninput="updateNotes(this.value)" class="w-full h-72 bg-[#1E293B]/40 rounded-2xl p-6 text-slate-300 text-sm leading-relaxed outline-none border border-slate-800 focus:border-indigo-500/50 transition-all resize-none placeholder:text-slate-700" placeholder="Breakthroughs, conversations, or logic chains..."></textarea>
                 </div>
             </div>
 
-            <!-- RIGHT: ACTION TIERS -->
+            <!-- RIGHT -->
             <div class="lg:col-span-5 space-y-4">
-                
                 <!-- TIER 3 -->
                 <div class="glass p-5 border-t-4 border-emerald-500">
                     <div class="flex justify-between items-center mb-4">
                         <h3 class="text-[10px] font-black uppercase text-slate-400">Tier 3: Legacy (+5)</h3>
                         <span class="px-2 py-1 bg-emerald-50 text-emerald-600 text-[8px] font-black rounded-md">HIGH IMPACT</span>
                     </div>
-                    <div id="legacyTasks" class="min-h-[40px]"></div>
+                    <div id="legacyTasks"></div>
                     <div class="mt-4 flex gap-2">
                         <input id="legacyInput" onkeydown="if(event.key==='Enter') addTask('legacy')" type="text" class="flex-1 bg-slate-50 rounded-xl px-4 text-xs font-bold outline-none border border-slate-100" placeholder="New legacy task...">
                         <button onclick="addTask('legacy')" class="w-10 h-10 bg-emerald-500 text-white rounded-xl shadow-lg shadow-emerald-500/20"><i class="fa-solid fa-plus"></i></button>
@@ -297,7 +297,7 @@
                     <div class="flex justify-between items-center mb-4">
                         <h3 class="text-[10px] font-black uppercase text-slate-400">Tier 2: Engine (+3)</h3>
                     </div>
-                    <div id="engineTasks" class="min-h-[40px]"></div>
+                    <div id="engineTasks"></div>
                     <div class="mt-4 flex gap-2">
                         <input id="engineInput" onkeydown="if(event.key==='Enter') addTask('engine')" type="text" class="flex-1 bg-slate-50 rounded-xl px-4 text-xs font-bold outline-none border border-slate-100" placeholder="Operational task...">
                         <button onclick="addTask('engine')" class="w-10 h-10 bg-indigo-500 text-white rounded-xl shadow-lg shadow-indigo-500/20"><i class="fa-solid fa-plus"></i></button>
@@ -309,7 +309,7 @@
                     <div class="flex justify-between items-center mb-4">
                         <h3 class="text-[10px] font-black uppercase text-slate-400">Tier 1: Fuel (+1)</h3>
                     </div>
-                    <div id="fuelTasks" class="min-h-[40px]"></div>
+                    <div id="fuelTasks"></div>
                     <div class="mt-4 flex gap-2">
                         <input id="fuelInput" onkeydown="if(event.key==='Enter') addTask('fuel')" type="text" class="flex-1 bg-slate-50 rounded-xl px-4 text-xs font-bold outline-none border border-slate-100" placeholder="Quick win...">
                         <button onclick="addTask('fuel')" class="w-10 h-10 bg-blue-500 text-white rounded-xl shadow-lg shadow-blue-500/20"><i class="fa-solid fa-plus"></i></button>
@@ -319,7 +319,7 @@
         </main>
     </div>
 
-    <!-- PERSISTENT FOOTER FOR SYNC -->
+    <!-- PERSISTENT FOOTER -->
     <footer class="fixed bottom-0 left-0 w-full bg-white/80 backdrop-blur-md border-t border-slate-200 p-4 z-50">
         <div class="max-w-6xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-4">
             <div class="flex items-center gap-4">
@@ -328,9 +328,8 @@
                     <span class="text-[10px] font-black uppercase text-slate-400 tracking-widest">Device ID</span>
                 </div>
                 <div class="bg-slate-900 text-indigo-400 px-4 py-2 rounded-full text-[11px] font-mono font-bold shadow-inner">
-                    <span id="displayId">INITIALIZING...</span>
+                    <span id="displayId">FETCHING...</span>
                 </div>
-                <button onclick="resetId()" class="text-[10px] font-black uppercase text-red-400 hover:text-red-600 transition-colors">Reset</button>
             </div>
 
             <div class="flex items-center gap-3">
