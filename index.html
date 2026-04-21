@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Achievement Ledger | Sync Fixed</title>
+    <title>Achievement Ledger | Stable Build</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
     
@@ -12,25 +12,27 @@
         import { getAuth, onAuthStateChanged, signInAnonymously, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
         import { getFirestore, doc, setDoc, onSnapshot, getDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
+        // Firebase Config
         const firebaseConfig = JSON.parse(__firebase_config);
         const app = initializeApp(firebaseConfig);
         const auth = getAuth(app);
         const db = getFirestore(app);
-        const appId = typeof __app_id !== 'undefined' ? __app_id : 'ledger-v4';
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'ledger-stable-v1';
 
-        // State
-        let user = null;
+        // Internal State
+        let currentUser = null;
         let currentDate = new Date().toISOString().split('T')[0];
-        let dailyData = {
+        
+        let state = {
             dailyNotes: "",
             target: 22,
             filters: [false, false, false, false],
-            tasks: { legacy: [], engine: [], fuel: [] }
+            tasks: { legacy: [], engine: [], fuel: [] },
+            northStar: ""
         };
-        let globalData = { northStar: "" };
 
-        // --- AUTH & INITIALIZATION ---
-        const initAuth = async () => {
+        // --- AUTH & SYNC ---
+        const init = async () => {
             try {
                 if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
                     await signInWithCustomToken(auth, __initial_auth_token);
@@ -38,306 +40,355 @@
                     await signInAnonymously(auth);
                 }
             } catch (e) {
-                console.error("Auth error", e);
-                document.getElementById('syncStatus').innerText = "OFFLINE";
+                console.error("Auth Error:", e);
             }
         };
 
-        onAuthStateChanged(auth, (u) => {
-            user = u;
-            if (u) {
-                document.getElementById('displayId').innerText = u.uid;
-                setupListeners(u.uid);
+        onAuthStateChanged(auth, (user) => {
+            if (user) {
+                currentUser = user;
+                document.getElementById('displayId').innerText = user.uid;
+                setupListeners(user.uid);
             }
         });
 
-        // --- DATA LISTENERS ---
         function setupListeners(uid) {
-            document.getElementById('syncStatus').innerText = "CONNECTING...";
-            
-            // Global Settings
+            // Global Settings Listener (North Star)
             onSnapshot(doc(db, 'artifacts', appId, 'users', uid, 'settings', 'global'), (snap) => {
                 if (snap.exists()) {
-                    globalData = snap.data();
-                    render();
+                    state.northStar = snap.data().northStar || "";
+                    document.getElementById('northStar').value = state.northStar;
                 }
-            });
+            }, (err) => console.error("Global Sync Error:", err));
 
-            // Daily Data
+            // Daily Data Listener
             onSnapshot(doc(db, 'artifacts', appId, 'users', uid, 'days', currentDate), (snap) => {
+                document.getElementById('syncStatus').innerText = "LIVE";
                 if (snap.exists()) {
-                    dailyData = snap.data();
-                    if (!dailyData.tasks) dailyData.tasks = { legacy: [], engine: [], fuel: [] };
+                    const data = snap.data();
+                    // Merge incoming data into local state
+                    state.dailyNotes = data.dailyNotes || "";
+                    state.filters = data.filters || [false, false, false, false];
+                    state.tasks = data.tasks || { legacy: [], engine: [], fuel: [] };
                     render();
-                    document.getElementById('syncStatus').innerText = "LIVE";
                 } else {
-                    saveDaily(); // Create initial doc
+                    // Initialize if empty
+                    saveState();
                 }
             }, (err) => {
-                document.getElementById('syncStatus').innerText = "SYNC ERROR";
+                document.getElementById('syncStatus').innerText = "OFFLINE";
+                console.error("Daily Sync Error:", err);
             });
         }
 
-        // --- SAVE FUNCTIONS ---
-        async function saveDaily() {
-            if (!user) return;
-            await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'days', currentDate), dailyData);
+        // --- DATABASE PERSISTENCE ---
+        async function saveState() {
+            if (!currentUser) return;
+            try {
+                await setDoc(doc(db, 'artifacts', appId, 'users', currentUser.uid, 'days', currentDate), {
+                    dailyNotes: state.dailyNotes,
+                    filters: state.filters,
+                    tasks: state.tasks,
+                    updatedAt: Date.now()
+                });
+            } catch (e) {
+                console.error("Save Error:", e);
+            }
         }
 
-        async function saveGlobal() {
-            if (!user) return;
-            await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'global'), globalData);
+        async function saveNorthStar() {
+            if (!currentUser) return;
+            await setDoc(doc(db, 'artifacts', appId, 'users', currentUser.uid, 'settings', 'global'), {
+                northStar: state.northStar
+            });
         }
 
-        // --- UI ACTIONS ---
+        // --- CORE ACTIONS ---
         window.addTask = (tier) => {
             const input = document.getElementById(`${tier}Input`);
-            const val = input.value.trim();
-            if (!val) return;
+            const text = input.value.trim();
+            if (!text) return;
 
-            if (!dailyData.tasks[tier]) dailyData.tasks[tier] = [];
-            dailyData.tasks[tier].push({
+            if (!state.tasks[tier]) state.tasks[tier] = [];
+            
+            state.tasks[tier].push({
                 id: Date.now(),
-                text: val,
+                text: text,
                 completed: false
             });
 
             input.value = "";
-            render();
-            saveDaily();
+            render(); // Immediate UI feedback
+            saveState(); // Sync to DB
         };
 
         window.toggleTask = (tier, id) => {
-            const task = dailyData.tasks[tier].find(t => t.id === id);
+            const task = state.tasks[tier].find(t => t.id === id);
             if (task) {
                 task.completed = !task.completed;
                 render();
-                saveDaily();
+                saveState();
             }
         };
 
         window.deleteTask = (tier, id) => {
-            dailyData.tasks[tier] = dailyData.tasks[tier].filter(t => t.id !== id);
+            state.tasks[tier] = state.tasks[tier].filter(t => t.id !== id);
             render();
-            saveDaily();
+            saveState();
         };
 
         window.updateFilter = (idx, checked) => {
-            dailyData.filters[idx] = checked;
+            state.filters[idx] = checked;
             render();
-            saveDaily();
+            saveState();
         };
 
         window.updateNotes = (val) => {
-            dailyData.dailyNotes = val;
-            saveDaily();
+            state.dailyNotes = val;
+            // Debounced save would be better, but direct save for now
+            saveState();
         };
 
         window.updateNorthStar = (val) => {
-            globalData.northStar = val;
-            saveGlobal();
+            state.northStar = val;
+            saveNorthStar();
         };
 
-        // --- RENDER LOGIC ---
+        // --- RENDERING ---
         function render() {
-            // Update Text Areas
-            document.getElementById('northStar').value = globalData.northStar || "";
-            document.getElementById('dailyNotes').value = dailyData.dailyNotes || "";
-            document.getElementById('dateDisplay').innerText = new Date(currentDate).toLocaleDateString();
-
-            // Update Checkboxes
-            dailyData.filters.forEach((val, i) => {
-                document.getElementById(`filter${i}`).checked = !!val;
+            document.getElementById('dateDisplay').innerText = new Date(currentDate).toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' });
+            document.getElementById('dailyNotes').value = state.dailyNotes;
+            
+            // Checkboxes
+            state.filters.forEach((val, i) => {
+                const el = document.getElementById(`filter${i}`);
+                if (el) el.checked = !!val;
             });
 
-            // Calculate Score
             let totalScore = 0;
-            const scoring = { legacy: 5, engine: 3, fuel: 1 };
-            
+            const points = { legacy: 5, engine: 3, fuel: 1 };
+
             ['legacy', 'engine', 'fuel'].forEach(tier => {
                 const container = document.getElementById(`${tier}Tasks`);
                 container.innerHTML = "";
                 
-                (dailyData.tasks[tier] || []).forEach(task => {
-                    if (task.completed) totalScore += scoring[tier];
+                (state.tasks[tier] || []).forEach(task => {
+                    if (task.completed) totalScore += points[tier];
                     
-                    const div = document.createElement('div');
-                    div.className = `flex items-center gap-3 p-3 bg-white border border-slate-100 rounded-xl shadow-sm mb-2`;
-                    div.innerHTML = `
-                        <button onclick="window.toggleTask('${tier}', ${task.id})" class="w-5 h-5 rounded border-2 flex items-center justify-center transition-all ${task.completed ? 'bg-emerald-500 border-emerald-500 text-white' : 'border-slate-200'}">
-                            ${task.completed ? '<i class="fa-solid fa-check text-[10px]"></i>' : ''}
+                    const item = document.createElement('div');
+                    item.className = `flex items-center gap-3 p-3 bg-white border border-slate-100 rounded-xl shadow-sm mb-2 group animate-in fade-in slide-in-from-right-2 duration-200`;
+                    item.innerHTML = `
+                        <button onclick="window.toggleTask('${tier}', ${task.id})" class="w-6 h-6 rounded-lg border-2 flex items-center justify-center transition-all ${task.completed ? 'bg-emerald-500 border-emerald-500 text-white' : 'border-slate-200 hover:border-emerald-300'}">
+                            ${task.completed ? '<i class="fa-solid fa-check text-[12px]"></i>' : ''}
                         </button>
                         <span class="text-sm font-bold text-slate-700 flex-1 ${task.completed ? 'line-through opacity-40' : ''}">${task.text}</span>
-                        <button onclick="window.deleteTask('${tier}', ${task.id})" class="text-slate-300 hover:text-red-500 transition-colors"><i class="fa-solid fa-trash-can text-xs"></i></button>
+                        <button onclick="window.deleteTask('${tier}', ${task.id})" class="opacity-0 group-hover:opacity-100 text-slate-300 hover:text-red-500 transition-all p-1">
+                            <i class="fa-solid fa-trash-can text-xs"></i>
+                        </button>
                     `;
-                    container.appendChild(div);
+                    container.appendChild(item);
                 });
             });
 
-            // Add multipliers
-            dailyData.filters.forEach(f => { if(f) totalScore += 2; });
+            // Filters Multiplier
+            state.filters.forEach(f => { if(f) totalScore += 2; });
 
+            // Visual Score Update
             document.getElementById('scoreText').innerText = totalScore;
             const progress = Math.min((totalScore / 22) * 100, 100);
-            document.getElementById('progressRing').style.strokeDashoffset = 138 - (138 * (progress / 100));
+            const ring = document.getElementById('progressRing');
+            ring.style.strokeDashoffset = 138 - (138 * (progress / 100));
+            
+            // Color feedback based on progress
+            if (progress >= 100) ring.setAttribute('stroke', '#10B981');
+            else if (progress >= 50) ring.setAttribute('stroke', '#6366F1');
+            else ring.setAttribute('stroke', '#94A3B8');
         }
 
-        window.manualSync = () => {
-            const id = prompt("Enter Device ID to Link:");
-            if (id && id.trim()) {
-                // In a real environment, we'd handle custom token logic, 
-                // but for this UI we'll reload and prompt for login or use storage logic.
-                alert("To link devices, use the same account or contact support for ID transfer.");
-            }
+        window.manualLink = () => {
+            const code = prompt("Device ID for linking (Copy the ID from your other device):");
+            if (code) alert("Device linking is currently handled via your unique Auth token. Ensure you are logged into the same session.");
         };
 
-        window.onload = initAuth;
+        window.onload = init;
     </script>
 
     <style>
-        @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;600;700;800&display=swap');
-        body { font-family: 'Plus Jakarta Sans', sans-serif; background-color: #F4F7FA; color: #1E293B; }
-        .glass { background: rgba(255, 255, 255, 0.9); backdrop-filter: blur(10px); border: 1px solid rgba(226, 232, 240, 0.8); border-radius: 1.5rem; }
-        .ring-path { transition: stroke-dashoffset 0.6s cubic-bezier(0.4, 0, 0.2, 1); transform: rotate(-90deg); transform-origin: center; }
+        @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap');
+        body { font-family: 'Plus Jakarta Sans', sans-serif; background-color: #F8FAFC; color: #1E293B; -webkit-tap-highlight-color: transparent; }
+        .glass { background: rgba(255, 255, 255, 0.95); backdrop-filter: blur(12px); border: 1px solid rgba(226, 232, 240, 1); border-radius: 1.5rem; }
+        .ring-path { transition: stroke-dashoffset 0.8s cubic-bezier(0.34, 1.56, 0.64, 1); transform: rotate(-90deg); transform-origin: center; }
+        input::placeholder { color: #CBD5E1; }
+        .task-input { transition: all 0.2s ease; }
+        .task-input:focus { border-color: #6366F1; background: white; box-shadow: 0 0 0 4px rgba(99, 102, 241, 0.1); }
     </style>
 </head>
-<body class="p-4 md:p-8 pb-32">
+<body class="p-4 md:p-8 pb-40">
 
     <div class="max-w-6xl mx-auto">
         <!-- HEADER -->
-        <header class="flex flex-col md:flex-row justify-between items-start md:items-center gap-6 mb-10">
+        <header class="flex flex-col md:flex-row justify-between items-start md:items-center gap-6 mb-12">
             <div>
-                <h1 class="text-3xl font-extrabold tracking-tight">Achievement Ledger</h1>
-                <p class="text-[10px] font-bold text-indigo-600 uppercase tracking-[0.2em] mt-1">Consultant ⮕ Home Impact Developer</p>
+                <h1 class="text-4xl font-extrabold tracking-tight text-slate-900">Achievement Ledger</h1>
+                <div class="flex items-center gap-3 mt-2">
+                    <span class="px-2 py-0.5 bg-indigo-50 text-indigo-600 text-[10px] font-black uppercase tracking-widest rounded-md">Consultant</span>
+                    <i class="fa-solid fa-arrow-right text-slate-300 text-xs"></i>
+                    <span class="px-2 py-0.5 bg-emerald-50 text-emerald-600 text-[10px] font-black uppercase tracking-widest rounded-md">Home Impact Developer</span>
+                </div>
             </div>
 
-            <div class="flex items-center gap-4">
-                <div class="glass px-6 py-3 flex items-center gap-4 shadow-sm">
-                    <span id="dateDisplay" class="font-bold text-slate-600 text-sm">...</span>
-                    <div class="h-8 w-[1px] bg-slate-200"></div>
-                    <div class="relative flex items-center justify-center">
-                        <svg width="44" height="44" viewBox="0 0 50 50">
-                            <circle cx="25" cy="25" r="22" fill="none" stroke="#E2E8F0" stroke-width="4" />
-                            <circle id="progressRing" cx="25" cy="25" r="22" fill="none" stroke="#10B981" stroke-width="4" stroke-dasharray="138" stroke-dashoffset="138" stroke-linecap="round" class="ring-path" />
-                        </svg>
-                        <span id="scoreText" class="absolute font-black text-xs">0</span>
-                    </div>
-                    <span class="text-[10px] font-black text-slate-300 uppercase">/ 22 Target</span>
+            <div class="glass px-6 py-4 flex items-center gap-6 shadow-xl shadow-slate-200/50">
+                <div class="text-right">
+                    <div id="dateDisplay" class="font-bold text-slate-900 text-sm">...</div>
+                    <div class="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Daily Ledger</div>
+                </div>
+                <div class="h-10 w-[1px] bg-slate-200"></div>
+                <div class="relative flex items-center justify-center">
+                    <svg width="52" height="52" viewBox="0 0 50 50">
+                        <circle cx="25" cy="25" r="22" fill="none" stroke="#F1F5F9" stroke-width="5" />
+                        <circle id="progressRing" cx="25" cy="25" r="22" fill="none" stroke="#6366F1" stroke-width="5" stroke-dasharray="138" stroke-dashoffset="138" stroke-linecap="round" class="ring-path" />
+                    </svg>
+                    <span id="scoreText" class="absolute font-black text-sm text-slate-800">0</span>
+                </div>
+                <div>
+                    <div class="text-lg font-black text-slate-900">22</div>
+                    <div class="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Target</div>
                 </div>
             </div>
         </header>
 
         <main class="grid grid-cols-1 lg:grid-cols-12 gap-8">
-            <!-- LEFT -->
-            <div class="lg:col-span-7 space-y-6">
-                <!-- North Star -->
-                <div class="glass p-6 border-l-8 border-emerald-500 shadow-md">
-                    <div class="flex items-center gap-2 mb-3 text-emerald-600">
+            <!-- LEFT COLUMN -->
+            <div class="lg:col-span-7 space-y-8">
+                
+                <!-- NORTH STAR -->
+                <div class="glass p-8 border-l-[12px] border-emerald-500 shadow-lg relative overflow-hidden">
+                    <div class="absolute top-0 right-0 p-4 opacity-10 text-emerald-900 text-6xl">
                         <i class="fa-solid fa-compass"></i>
-                        <h2 class="text-[10px] font-black uppercase tracking-widest">The North Star</h2>
                     </div>
-                    <textarea id="northStar" oninput="updateNorthStar(this.value)" class="w-full bg-transparent text-lg font-bold text-slate-800 outline-none resize-none h-20 placeholder:text-slate-200" placeholder="Your long-term objective..."></textarea>
+                    <div class="flex items-center gap-2 mb-4 text-emerald-600">
+                        <h2 class="text-[11px] font-black uppercase tracking-[0.25em]">The North Star</h2>
+                    </div>
+                    <textarea id="northStar" oninput="updateNorthStar(this.value)" class="w-full bg-transparent text-xl font-bold text-slate-800 outline-none resize-none h-24 placeholder:text-slate-200" placeholder="Describe your ultimate impact objective..."></textarea>
                 </div>
 
-                <!-- Strategic Filters -->
-                <div class="glass p-6">
-                    <h2 class="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-4">Strategic Multipliers (+2 pts ea)</h2>
-                    <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
-                        <label class="flex flex-col items-center justify-center p-3 rounded-2xl bg-slate-50 border border-slate-100 cursor-pointer hover:bg-slate-100 transition-all">
-                            <input type="checkbox" id="filter0" onchange="updateFilter(0, this.checked)" class="mb-2 w-4 h-4 accent-emerald-500">
-                            <span class="text-[8px] font-black text-center leading-tight">CLINICAL<br>IMPACT</span>
+                <!-- STRATEGIC FILTERS -->
+                <div class="glass p-8 shadow-md">
+                    <h2 class="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-6 flex items-center gap-2">
+                        <i class="fa-solid fa-bolt text-amber-400"></i>
+                        Strategic Multipliers (+2 pts ea)
+                    </h2>
+                    <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
+                        <label class="group flex flex-col items-center p-4 rounded-2xl bg-slate-50 border border-slate-100 cursor-pointer hover:border-emerald-200 hover:bg-emerald-50/30 transition-all">
+                            <input type="checkbox" id="filter0" onchange="updateFilter(0, this.checked)" class="mb-3 w-5 h-5 accent-emerald-500 rounded-lg">
+                            <span class="text-[9px] font-black text-center leading-tight text-slate-600 group-hover:text-emerald-700">CLINICAL<br>IMPACT</span>
                         </label>
-                        <label class="flex flex-col items-center justify-center p-3 rounded-2xl bg-slate-50 border border-slate-100 cursor-pointer hover:bg-slate-100 transition-all">
-                            <input type="checkbox" id="filter1" onchange="updateFilter(1, this.checked)" class="mb-2 w-4 h-4 accent-emerald-500">
-                            <span class="text-[8px] font-black text-center leading-tight">LEVERAGE<br>RATIO</span>
+                        <label class="group flex flex-col items-center p-4 rounded-2xl bg-slate-50 border border-slate-100 cursor-pointer hover:border-emerald-200 hover:bg-emerald-50/30 transition-all">
+                            <input type="checkbox" id="filter1" onchange="updateFilter(1, this.checked)" class="mb-3 w-5 h-5 accent-emerald-500 rounded-lg">
+                            <span class="text-[9px] font-black text-center leading-tight text-slate-600 group-hover:text-emerald-700">LEVERAGE<br>RATIO</span>
                         </label>
-                        <label class="flex flex-col items-center justify-center p-3 rounded-2xl bg-slate-50 border border-slate-100 cursor-pointer hover:bg-slate-100 transition-all">
-                            <input type="checkbox" id="filter2" onchange="updateFilter(2, this.checked)" class="mb-2 w-4 h-4 accent-emerald-500">
-                            <span class="text-[8px] font-black text-center leading-tight">SCALABLE<br>MODEL</span>
+                        <label class="group flex flex-col items-center p-4 rounded-2xl bg-slate-50 border border-slate-100 cursor-pointer hover:border-emerald-200 hover:bg-emerald-50/30 transition-all">
+                            <input type="checkbox" id="filter2" onchange="updateFilter(2, this.checked)" class="mb-3 w-5 h-5 accent-emerald-500 rounded-lg">
+                            <span class="text-[9px] font-black text-center leading-tight text-slate-600 group-hover:text-emerald-700">SCALABLE<br>MODEL</span>
                         </label>
-                        <label class="flex flex-col items-center justify-center p-3 rounded-2xl bg-slate-50 border border-slate-100 cursor-pointer hover:bg-slate-100 transition-all">
-                            <input type="checkbox" id="filter3" onchange="updateFilter(3, this.checked)" class="mb-2 w-4 h-4 accent-emerald-500">
-                            <span class="text-[8px] font-black text-center leading-tight">ASSET<br>EQUITY</span>
+                        <label class="group flex flex-col items-center p-4 rounded-2xl bg-slate-50 border border-slate-100 cursor-pointer hover:border-emerald-200 hover:bg-emerald-50/30 transition-all">
+                            <input type="checkbox" id="filter3" onchange="updateFilter(3, this.checked)" class="mb-3 w-5 h-5 accent-emerald-500 rounded-lg">
+                            <span class="text-[9px] font-black text-center leading-tight text-slate-600 group-hover:text-emerald-700">ASSET<br>EQUITY</span>
                         </label>
                     </div>
                 </div>
 
-                <!-- Daily Log -->
-                <div class="bg-[#0F172A] rounded-[2rem] p-8 shadow-2xl overflow-hidden relative">
-                    <div class="flex justify-between items-center mb-6">
-                        <div class="flex items-center gap-3">
-                            <div class="w-8 h-8 rounded-lg bg-indigo-500/20 flex items-center justify-center text-indigo-400">
-                                <i class="fa-solid fa-feather-pointed"></i>
+                <!-- DAILY NOTES -->
+                <div class="bg-[#0F172A] rounded-[2.5rem] p-10 shadow-2xl border border-slate-800">
+                    <div class="flex justify-between items-center mb-8">
+                        <div class="flex items-center gap-4">
+                            <div class="w-10 h-10 rounded-xl bg-indigo-500/20 flex items-center justify-center text-indigo-400">
+                                <i class="fa-solid fa-pen-nib"></i>
                             </div>
-                            <h2 class="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400">Daily Ledger Log</h2>
+                            <h2 class="text-[11px] font-black uppercase tracking-[0.2em] text-slate-400">Daily Execution Log</h2>
                         </div>
-                        <div id="syncStatus" class="text-[9px] font-black text-slate-500 uppercase tracking-widest">CONNECTING...</div>
+                        <div class="flex items-center gap-2">
+                            <div id="syncStatus" class="text-[10px] font-black text-slate-500 uppercase tracking-widest">OFFLINE</div>
+                            <div class="w-2 h-2 rounded-full bg-slate-700" id="syncIndicator"></div>
+                        </div>
                     </div>
-                    <textarea id="dailyNotes" oninput="updateNotes(this.value)" class="w-full h-72 bg-[#1E293B]/40 rounded-2xl p-6 text-slate-300 text-sm leading-relaxed outline-none border border-slate-800 focus:border-indigo-500/50 transition-all resize-none placeholder:text-slate-700" placeholder="Breakthroughs, conversations, or logic chains..."></textarea>
+                    <textarea id="dailyNotes" oninput="updateNotes(this.value)" class="w-full h-80 bg-slate-800/30 rounded-2xl p-8 text-slate-300 text-base leading-relaxed outline-none border border-slate-700/50 focus:border-indigo-500/50 transition-all resize-none placeholder:text-slate-700" placeholder="Record logic, wins, and friction points here..."></textarea>
                 </div>
             </div>
 
-            <!-- RIGHT -->
-            <div class="lg:col-span-5 space-y-4">
+            <!-- RIGHT COLUMN: TASKS -->
+            <div class="lg:col-span-5 space-y-6">
+                
                 <!-- TIER 3 -->
-                <div class="glass p-5 border-t-4 border-emerald-500">
-                    <div class="flex justify-between items-center mb-4">
-                        <h3 class="text-[10px] font-black uppercase text-slate-400">Tier 3: Legacy (+5)</h3>
-                        <span class="px-2 py-1 bg-emerald-50 text-emerald-600 text-[8px] font-black rounded-md">HIGH IMPACT</span>
+                <div class="glass p-6 border-t-[6px] border-emerald-500 shadow-lg">
+                    <div class="flex justify-between items-center mb-6">
+                        <h3 class="text-[11px] font-black uppercase tracking-widest text-slate-400">Tier 3: Legacy (+5)</h3>
+                        <div class="w-8 h-8 rounded-full bg-emerald-50 flex items-center justify-center text-emerald-500">
+                            <i class="fa-solid fa-trophy text-xs"></i>
+                        </div>
                     </div>
                     <div id="legacyTasks"></div>
-                    <div class="mt-4 flex gap-2">
-                        <input id="legacyInput" onkeydown="if(event.key==='Enter') addTask('legacy')" type="text" class="flex-1 bg-slate-50 rounded-xl px-4 text-xs font-bold outline-none border border-slate-100" placeholder="New legacy task...">
-                        <button onclick="addTask('legacy')" class="w-10 h-10 bg-emerald-500 text-white rounded-xl shadow-lg shadow-emerald-500/20"><i class="fa-solid fa-plus"></i></button>
+                    <div class="mt-6 flex gap-3">
+                        <input id="legacyInput" onkeydown="if(event.key==='Enter') addTask('legacy')" type="text" class="task-input flex-1 bg-slate-50 rounded-2xl px-5 text-sm font-bold outline-none border border-slate-100 h-12" placeholder="High impact milestone...">
+                        <button onclick="addTask('legacy')" class="w-12 h-12 bg-emerald-500 text-white rounded-2xl shadow-lg shadow-emerald-500/30 hover:scale-105 active:scale-95 transition-all"><i class="fa-solid fa-plus"></i></button>
                     </div>
                 </div>
 
                 <!-- TIER 2 -->
-                <div class="glass p-5 border-t-4 border-indigo-500">
-                    <div class="flex justify-between items-center mb-4">
-                        <h3 class="text-[10px] font-black uppercase text-slate-400">Tier 2: Engine (+3)</h3>
+                <div class="glass p-6 border-t-[6px] border-indigo-500 shadow-lg">
+                    <div class="flex justify-between items-center mb-6">
+                        <h3 class="text-[11px] font-black uppercase tracking-widest text-slate-400">Tier 2: Engine (+3)</h3>
+                        <div class="w-8 h-8 rounded-full bg-indigo-50 flex items-center justify-center text-indigo-500">
+                            <i class="fa-solid fa-gears text-xs"></i>
+                        </div>
                     </div>
                     <div id="engineTasks"></div>
-                    <div class="mt-4 flex gap-2">
-                        <input id="engineInput" onkeydown="if(event.key==='Enter') addTask('engine')" type="text" class="flex-1 bg-slate-50 rounded-xl px-4 text-xs font-bold outline-none border border-slate-100" placeholder="Operational task...">
-                        <button onclick="addTask('engine')" class="w-10 h-10 bg-indigo-500 text-white rounded-xl shadow-lg shadow-indigo-500/20"><i class="fa-solid fa-plus"></i></button>
+                    <div class="mt-6 flex gap-3">
+                        <input id="engineInput" onkeydown="if(event.key==='Enter') addTask('engine')" type="text" class="task-input flex-1 bg-slate-50 rounded-2xl px-5 text-sm font-bold outline-none border border-slate-100 h-12" placeholder="Standard workflow...">
+                        <button onclick="addTask('engine')" class="w-12 h-12 bg-indigo-500 text-white rounded-2xl shadow-lg shadow-indigo-500/30 hover:scale-105 active:scale-95 transition-all"><i class="fa-solid fa-plus"></i></button>
                     </div>
                 </div>
 
                 <!-- TIER 1 -->
-                <div class="glass p-5 border-t-4 border-blue-500">
-                    <div class="flex justify-between items-center mb-4">
-                        <h3 class="text-[10px] font-black uppercase text-slate-400">Tier 1: Fuel (+1)</h3>
+                <div class="glass p-6 border-t-[6px] border-blue-400 shadow-lg">
+                    <div class="flex justify-between items-center mb-6">
+                        <h3 class="text-[11px] font-black uppercase tracking-widest text-slate-400">Tier 1: Fuel (+1)</h3>
+                        <div class="w-8 h-8 rounded-full bg-blue-50 flex items-center justify-center text-blue-500">
+                            <i class="fa-solid fa-gas-pump text-xs"></i>
+                        </div>
                     </div>
                     <div id="fuelTasks"></div>
-                    <div class="mt-4 flex gap-2">
-                        <input id="fuelInput" onkeydown="if(event.key==='Enter') addTask('fuel')" type="text" class="flex-1 bg-slate-50 rounded-xl px-4 text-xs font-bold outline-none border border-slate-100" placeholder="Quick win...">
-                        <button onclick="addTask('fuel')" class="w-10 h-10 bg-blue-500 text-white rounded-xl shadow-lg shadow-blue-500/20"><i class="fa-solid fa-plus"></i></button>
+                    <div class="mt-6 flex gap-3">
+                        <input id="fuelInput" onkeydown="if(event.key==='Enter') addTask('fuel')" type="text" class="task-input flex-1 bg-slate-50 rounded-2xl px-5 text-sm font-bold outline-none border border-slate-100 h-12" placeholder="Administrative / Speed...">
+                        <button onclick="addTask('fuel')" class="w-12 h-12 bg-blue-500 text-white rounded-2xl shadow-lg shadow-blue-500/30 hover:scale-105 active:scale-95 transition-all"><i class="fa-solid fa-plus"></i></button>
                     </div>
                 </div>
+
             </div>
         </main>
     </div>
 
-    <!-- PERSISTENT FOOTER -->
-    <footer class="fixed bottom-0 left-0 w-full bg-white/80 backdrop-blur-md border-t border-slate-200 p-4 z-50">
-        <div class="max-w-6xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-4">
-            <div class="flex items-center gap-4">
-                <div class="flex items-center gap-2">
-                    <div class="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></div>
-                    <span class="text-[10px] font-black uppercase text-slate-400 tracking-widest">Device ID</span>
+    <!-- PERSISTENT SYNC FOOTER -->
+    <footer class="fixed bottom-0 left-0 w-full bg-white/90 backdrop-blur-xl border-t border-slate-200 px-6 py-6 z-[100]">
+        <div class="max-w-6xl mx-auto flex flex-col md:flex-row items-center justify-between gap-6">
+            <div class="flex items-center gap-6">
+                <div class="flex flex-col">
+                    <span class="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Authenticated ID</span>
+                    <div class="bg-slate-900 text-indigo-400 px-5 py-2.5 rounded-xl text-[11px] font-mono font-bold border border-slate-800 flex items-center gap-3">
+                        <i class="fa-solid fa-fingerprint text-indigo-500/50"></i>
+                        <span id="displayId" class="tracking-tight">SYNCING...</span>
+                    </div>
                 </div>
-                <div class="bg-slate-900 text-indigo-400 px-4 py-2 rounded-full text-[11px] font-mono font-bold shadow-inner">
-                    <span id="displayId">FETCHING...</span>
+                <div class="hidden sm:block h-10 w-[1px] bg-slate-200"></div>
+                <div class="hidden sm:flex items-center gap-3">
+                    <div class="w-3 h-3 rounded-full bg-emerald-500"></div>
+                    <span class="text-[10px] font-bold text-slate-500 uppercase tracking-[0.2em]">Secure Cloud Active</span>
                 </div>
             </div>
 
-            <div class="flex items-center gap-3">
-                <p class="hidden md:block text-[9px] font-black text-slate-400 uppercase tracking-widest">Continuous Sync Enabled</p>
-                <button onclick="manualSync()" class="bg-indigo-600 text-white px-6 py-2.5 rounded-full text-[10px] font-black uppercase tracking-widest shadow-xl shadow-indigo-200 hover:scale-[1.02] active:scale-[0.98] transition-all">
-                    Link Mobile / Desktop
-                </button>
-            </div>
+            <button onclick="manualLink()" class="w-full md:w-auto bg-indigo-600 text-white px-10 py-4 rounded-2xl text-[11px] font-black uppercase tracking-[0.25em] shadow-2xl shadow-indigo-200 hover:bg-indigo-700 hover:-translate-y-0.5 active:translate-y-0.5 transition-all">
+                Link Another Device
+            </button>
         </div>
     </footer>
 
